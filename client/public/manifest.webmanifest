@@ -1,0 +1,17 @@
+{
+  "name": "MeatHub",
+  "short_name": "MeatHub",
+  "description": "Fresh local meat, from farm to table.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8f7f2",
+  "theme_color": "#183c2b",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
