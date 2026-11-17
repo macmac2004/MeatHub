@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 
+const photo = (id) => `https://images.pexels.com/photos/${id}/pexels-photo-${id}.jpeg?auto=compress&cs=tinysrgb&w=1000`;
+
 const sampleProducts = [
   {
     id: 'farmstead-beef',
@@ -18,6 +20,48 @@ const sampleProducts = [
     archived: false
   },
   {
+    id: 'dry-aged-sirloin',
+    name: 'Dry-aged sirloin steaks',
+    farm: 'Green Pastures Farm',
+    category: 'Beef',
+    price: 465,
+    unit: '500g',
+    stock: 14,
+    image: photo(8477074),
+    location: 'Silang, Cavite',
+    description: 'Hand-cut sirloin with a firm grain and deep beefy flavor. Two steaks per pack.',
+    featured: false,
+    archived: false
+  },
+  {
+    id: 'beef-short-ribs',
+    name: 'Marbled beef short ribs',
+    farm: 'Batangas Cattle Co.',
+    category: 'Beef',
+    price: 580,
+    unit: '1kg',
+    stock: 9,
+    image: photo(12884544),
+    location: 'San Jose, Batangas',
+    description: 'Thick-cut bone-in short ribs with generous marbling. Ideal for slow braising or the grill.',
+    featured: false,
+    archived: false
+  },
+  {
+    id: 'ground-beef',
+    name: 'Lean ground beef',
+    farm: 'Batangas Cattle Co.',
+    category: 'Beef',
+    price: 320,
+    unit: '500g',
+    stock: 20,
+    image: photo(128401),
+    location: 'San Jose, Batangas',
+    description: 'Freshly minced lean beef, ground the same morning it is delivered. Great for burgers and giniling.',
+    featured: false,
+    archived: false
+  },
+  {
     id: 'heritage-pork',
     name: 'Heritage pork belly',
     farm: 'Bukid Lokal',
@@ -25,10 +69,38 @@ const sampleProducts = [
     price: 285,
     unit: '500g',
     stock: 24,
-    image: 'https://images.unsplash.com/photo-1602470520998-f4a52199a3d6?auto=format&fit=crop&w=1000&q=85',
+    image: photo(39594956),
     location: 'Lipa, Batangas',
-    description: 'Tender, flavorful pork belly raised on a small family farm.',
+    description: 'Tender, flavorful pork belly raised on a small family farm. Even layers of fat and lean.',
     featured: true,
+    archived: false
+  },
+  {
+    id: 'pork-loin-chops',
+    name: 'Pork loin chops',
+    farm: 'Bukid Lokal',
+    category: 'Pork',
+    price: 310,
+    unit: '500g',
+    stock: 16,
+    image: photo(7333264),
+    location: 'Lipa, Batangas',
+    description: 'Bone-in loin chops trimmed by hand, with a mild sweetness that grills beautifully.',
+    featured: false,
+    archived: false
+  },
+  {
+    id: 'pork-spare-ribs',
+    name: 'Fresh pork spare ribs',
+    farm: 'Umagang Farm',
+    category: 'Pork',
+    price: 340,
+    unit: '1kg',
+    stock: 11,
+    image: photo(7163989),
+    location: 'Indang, Cavite',
+    description: 'A full rack of spare ribs from pasture-raised pigs, cut fresh the day of pickup.',
+    featured: false,
     archived: false
   },
   {
@@ -39,9 +111,37 @@ const sampleProducts = [
     price: 390,
     unit: '1.2kg',
     stock: 12,
-    image: 'https://images.unsplash.com/photo-1587593810167-a84920ea0781?auto=format&fit=crop&w=1000&q=85',
+    image: photo(10842246),
     location: 'Indang, Cavite',
     description: 'Naturally raised, firm-textured chicken with a deep, savory flavor.',
+    featured: false,
+    archived: false
+  },
+  {
+    id: 'chicken-breast',
+    name: 'Skinless chicken breast fillets',
+    farm: 'Umagang Farm',
+    category: 'Chicken',
+    price: 295,
+    unit: '500g',
+    stock: 22,
+    image: photo(6107733),
+    location: 'Indang, Cavite',
+    description: 'Trimmed, boneless breast fillets — lean, quick to cook, and packed fresh.',
+    featured: false,
+    archived: false
+  },
+  {
+    id: 'chicken-drumsticks',
+    name: 'Chicken drumsticks',
+    farm: 'Mabini Poultry',
+    category: 'Chicken',
+    price: 250,
+    unit: '700g',
+    stock: 19,
+    image: photo(7140316),
+    location: 'Mabini, Batangas',
+    description: 'Juicy skin-on drumsticks from slow-grown birds. Sold in a family pack of eight.',
     featured: false,
     archived: false
   },
@@ -53,7 +153,7 @@ const sampleProducts = [
     price: 640,
     unit: '400g',
     stock: 8,
-    image: 'https://images.unsplash.com/photo-1603360946369-dc9bb6258143?auto=format&fit=crop&w=1000&q=85',
+    image: photo(6281509),
     location: 'Tagaytay, Cavite',
     description: 'A small-batch cut with delicate flavor, ready for the grill.',
     featured: true,
