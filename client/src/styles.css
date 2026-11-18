@@ -395,6 +395,8 @@ h1, h2, h3, p { margin-top: 0; }
 .listing-form { display: flex; flex-direction: column; gap: 12px; }
 .listing-form label { display: flex; flex-direction: column; gap: 6px; color: #59665a; font-size: 9px; font-weight: 600; }
 .listing-form input, .listing-form select, .listing-form textarea { width: 100%; border: 1px solid #dce1d8; border-radius: 1px; background: white; color: #39483b; padding: 10px; font-size: 10px; font-weight: 400; }
+.listing-form input[type="file"] { padding: 8px; }
+.listing-image-preview { width: 100%; max-height: 220px; object-fit: contain; border: 1px solid #e6e9e0; background: white; }
 .listing-form input, .listing-form select { height: 36px; }
 .listing-form textarea { resize: vertical; }
 .optional { color: #9a9e95; font-weight: 400; }

@@ -31,6 +31,27 @@ const initialForm = {
   name: '', farm: '', category: 'Beef', price: '', unit: '500g',
   stock: '', location: '', description: '', image: ''
 };
+const maxProductImageBytes = 5 * 1024 * 1024;
+
+async function uploadProductImage(file, user) {
+  const headers = { 'Content-Type': file.type };
+  if (firebaseEnabled) {
+    headers.Authorization = `Bearer ${await user.getIdToken()}`;
+  } else {
+    headers['X-Demo-User-Id'] = user.uid;
+    headers['X-Demo-User-Role'] = user.role || 'buyer';
+  }
+  const response = await fetch(`${API_URL}/api/uploads/product-image`, {
+    method: 'POST',
+    headers,
+    body: file
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Photo upload failed (${response.status}).`);
+  }
+  return response.json();
+}
 
 async function request(path, options = {}, user = null) {
   const headers = { 'Content-Type': 'application/json', ...options.headers };
@@ -98,6 +119,8 @@ function MarketApp() {
   const [cartOpen, setCartOpen] = useState(false);
   const [listingOpen, setListingOpen] = useState(false);
   const [listingForm, setListingForm] = useState(initialForm);
+  const [listingImageFile, setListingImageFile] = useState(null);
+  const [listingImagePreview, setListingImagePreview] = useState('');
   const [editingProduct, setEditingProduct] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -145,6 +168,16 @@ function MarketApp() {
   const chatRef = useRef(null);
   const searchRef = useRef(null);
   const syncRef = useRef(null);
+
+  useEffect(() => {
+    if (!listingImageFile) {
+      setListingImagePreview('');
+      return undefined;
+    }
+    const preview = URL.createObjectURL(listingImageFile);
+    setListingImagePreview(preview);
+    return () => URL.revokeObjectURL(preview);
+  }, [listingImageFile]);
 
   const announce = useCallback((message) => {
     setNotice(message);
@@ -469,6 +502,7 @@ function MarketApp() {
 
   function startEditListing(product) {
     setEditingProduct(product);
+    setListingImageFile(null);
     setListingForm({
       name: product.name,
       farm: product.farm,
@@ -481,6 +515,13 @@ function MarketApp() {
       image: product.image
     });
     setListingOpen(true);
+  }
+
+  function closeListingForm() {
+    setListingOpen(false);
+    setEditingProduct(null);
+    setListingForm(initialForm);
+    setListingImageFile(null);
   }
 
   function addToCart(product) {
@@ -556,18 +597,23 @@ function MarketApp() {
 
   async function submitListing(event) {
     event.preventDefault();
-    const body = {
-      ...listingForm,
-      price: Number(listingForm.price),
-      stock: Number(listingForm.stock),
-      image: listingForm.image || 'https://images.unsplash.com/photo-1607623814075-e51df1bdc82f?auto=format&fit=crop&w=1000&q=85'
-    };
     try {
+      const uploadedImage = listingImageFile
+        ? await uploadProductImage(listingImageFile, user)
+        : null;
+      const body = {
+        ...listingForm,
+        price: Number(listingForm.price),
+        stock: Number(listingForm.stock),
+        image: uploadedImage?.image || listingForm.image ||
+          'https://images.unsplash.com/photo-1607623814075-e51df1bdc82f?auto=format&fit=crop&w=1000&q=85'
+      };
       await request(editingProduct ? `/api/products/${editingProduct.id}` : '/api/products', {
         method: editingProduct ? 'PATCH' : 'POST',
         body: JSON.stringify(body)
       }, user);
       setListingForm(initialForm);
+      setListingImageFile(null);
       setEditingProduct(null);
       setListingOpen(false);
       announce(editingProduct ? 'Your listing has been updated.' : 'Your listing is live.');
@@ -740,6 +786,7 @@ function MarketApp() {
               <button className="primary-button" onClick={() => {
                 setEditingProduct(null);
                 setListingForm(initialForm);
+                setListingImageFile(null);
                 setListingOpen(true);
               }}>
                 <Plus size={16} /> Add meat listing
@@ -1013,9 +1060,9 @@ function MarketApp() {
       )}
 
       {accountRole === 'seller' && listingOpen && (
-        <div className="overlay modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setListingOpen(false)}>
+        <div className="overlay modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && closeListingForm()}>
           <section className="listing-modal" aria-label="Create a product listing">
-            <div className="panel-heading"><div><small>GROW WITH MEATHUB</small><h2>{editingProduct ? 'Update your listing.' : 'List something good.'}</h2></div><button className="icon-button" onClick={() => { setListingOpen(false); setEditingProduct(null); setListingForm(initialForm); }} aria-label="Close listing form"><X /></button></div>
+            <div className="panel-heading"><div><small>GROW WITH MEATHUB</small><h2>{editingProduct ? 'Update your listing.' : 'List something good.'}</h2></div><button className="icon-button" onClick={closeListingForm} aria-label="Close listing form"><X /></button></div>
             <p className="modal-intro">Tell local shoppers about the cuts you have ready.</p>
             <form className="listing-form" onSubmit={submitListing}>
               <label>Product name<input required value={listingForm.name} onChange={(e) => setListingForm({ ...listingForm, name: e.target.value })} placeholder="e.g. Grass-fed beef sirloin" /></label>
@@ -1029,7 +1076,26 @@ function MarketApp() {
                 <label>Stock<input type="number" min="1" step="1" required value={listingForm.stock} onChange={(e) => setListingForm({ ...listingForm, stock: e.target.value })} /></label>
               </div>
               <label>Pickup location<input required value={listingForm.location} onChange={(e) => setListingForm({ ...listingForm, location: e.target.value })} placeholder="Town or city" /></label>
-              <label>Photo URL <span className="optional">(optional)</span><input type="url" value={listingForm.image} onChange={(e) => setListingForm({ ...listingForm, image: e.target.value })} placeholder="https://…" /></label>
+              <label>Product photo <span className="optional">(optional · JPEG, PNG, or WebP · up to 5 MB)</span>
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) ||
+                      file.size > maxProductImageBytes) {
+                    announce('Choose a JPEG, PNG, or WebP image up to 5 MB.');
+                    event.target.value = '';
+                    return;
+                  }
+                  setListingImageFile(file);
+                }} />
+              </label>
+              {(listingImagePreview || listingForm.image) && (
+                <img
+                  className="listing-image-preview"
+                  src={listingImagePreview || listingForm.image}
+                  alt="Preview of the product"
+                />
+              )}
               <label>About this cut<textarea required rows="3" value={listingForm.description} onChange={(e) => setListingForm({ ...listingForm, description: e.target.value })} placeholder="How was it raised? What makes it special?" /></label>
               <button type="submit" className="primary-button checkout-button">{editingProduct ? 'Save listing changes' : 'Publish listing'} <ArrowRight size={16} /></button>
             </form>

@@ -28,6 +28,8 @@ import {
   updateProduct
 } from './store.js';
 import { isPhilippinesLocation, isValidDeliveryDate } from './delivery.js';
+import { isValidProductImage, MAX_PRODUCT_IMAGE_BYTES } from './productImage.js';
+import { uploadProductImage } from './cloudinary.js';
 
 const app = express();
 const server = createServer(app);
@@ -211,6 +213,36 @@ app.get('/api/products/mine', authenticate, requireRole('seller'), async (req, r
     next(error);
   }
 });
+
+app.post(
+  '/api/uploads/product-image',
+  authenticate,
+  requireRole('seller'),
+  express.raw({
+    type: ['image/jpeg', 'image/png', 'image/webp'],
+    limit: MAX_PRODUCT_IMAGE_BYTES
+  }),
+  async (req, res, next) => {
+    if (!process.env.CLOUDINARY_CLOUD_NAME?.trim() ||
+        !process.env.CLOUDINARY_API_KEY?.trim() ||
+        !process.env.CLOUDINARY_API_SECRET?.trim()) {
+      return res.status(503).json({ error: 'Cloudinary image uploads are not configured on this server.' });
+    }
+    const contentType = req.get('content-type')?.split(';')[0].trim();
+    if (!isValidProductImage(req.body, contentType)) {
+      return res.status(400).json({ error: 'Choose a valid JPEG, PNG, or WebP image up to 5 MB.' });
+    }
+    try {
+      res.status(201).json(await uploadProductImage(req.body, contentType, req.user.uid));
+    } catch (error) {
+      if (error.statusCode === 502) {
+        console.error('Cloudinary product photo upload failed:', error.message);
+        return res.status(502).json({ error: error.message });
+      }
+      next(error);
+    }
+  }
+);
 
 app.post('/api/products', authenticate, requireRole('seller'), async (req, res, next) => {
   const invalid = validateProduct(req.body);
@@ -414,6 +446,12 @@ if (existsSync(clientDistPath)) {
 
 app.use((error, _req, res, _next) => {
   console.error('API request failed:', error);
+  if (error.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Product photos must be 5 MB or smaller.' });
+  }
+  if (error.statusCode === 502) {
+    return res.status(502).json({ error: error.message });
+  }
   res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
 
