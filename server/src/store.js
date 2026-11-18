@@ -1,6 +1,6 @@
 import './env.js';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { dirname, resolve } from 'node:path';
@@ -276,16 +276,38 @@ if (isDemo) {
   console.warn(`MeatHub is using its local demo store at ${demoStorePath}.`);
 }
 
+function resolveFirebaseProjectId() {
+  const configured = process.env.FIREBASE_PROJECT_ID?.trim();
+  if (configured) return configured;
+  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  if (credentialsPath) {
+    try {
+      const projectId = JSON.parse(readFileSync(credentialsPath, 'utf8')).project_id;
+      if (projectId) return projectId;
+    } catch (error) {
+      throw new Error(`Could not read GOOGLE_APPLICATION_CREDENTIALS at ${credentialsPath}: ${error.message}`);
+    }
+  }
+  throw new Error('Firestore mode needs credentials. Set GOOGLE_APPLICATION_CREDENTIALS to a service-account JSON file (its project_id is used automatically), or run `gcloud auth application-default login` and set FIREBASE_PROJECT_ID. Set DATA_MODE=demo to keep using the local store.');
+}
+
 let db;
 if (!isDemo) {
-  if (!process.env.FIREBASE_PROJECT_ID) {
-    throw new Error('FIREBASE_PROJECT_ID is required when DATA_MODE=firebase.');
+  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  if (credentialsPath && !existsSync(credentialsPath)) {
+    throw new Error(`GOOGLE_APPLICATION_CREDENTIALS points to ${credentialsPath}, but that file does not exist.`);
   }
-  const app = getApps()[0] || initializeApp({
-    credential: applicationDefault(),
-    projectId: process.env.FIREBASE_PROJECT_ID
-  });
-  db = getFirestore(app);
+  const projectId = resolveFirebaseProjectId();
+  try {
+    const app = getApps()[0] || initializeApp({
+      credential: applicationDefault(),
+      projectId
+    });
+    db = getFirestore(app);
+  } catch (error) {
+    throw new Error(`Could not start Firestore for project ${projectId}: ${error.message}. Check that Firestore is enabled in the Firebase console and that the credentials can access it. Set DATA_MODE=demo to use the local store instead.`);
+  }
+  console.log(`MeatHub is using Firestore project ${projectId}.`);
 }
 
 export const demoMode = isDemo;

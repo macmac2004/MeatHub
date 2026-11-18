@@ -10,10 +10,14 @@ import {
 import { auth, firebaseEnabled } from './firebase.js';
 import { CourierPage, TrackingPage } from './DeliveryPages.jsx';
 import { isPhilippinesLocation } from './delivery.js';
+import {
+  claimQueuedOrder, enqueueOrder, listQueuedOrders, migrateLegacyQueue, removeQueuedOrder
+} from './orderQueue.js';
 import LoginPage from './LoginPage.jsx';
 import SignupPage from './SignupPage.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
+const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY || '';
 const DeliveryMap = lazy(() => import('./DeliveryMap.jsx'));
 const categories = ['All cuts', 'Beef', 'Pork', 'Chicken', 'Lamb'];
 const deliveryStatusLabels = {
@@ -48,6 +52,10 @@ function money(value) {
 function localDateString(date = new Date()) {
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return offsetDate.toISOString().slice(0, 10);
+}
+
+function isPermanentOrderFailure(status) {
+  return status >= 400 && status < 500 && ![401, 403, 408, 429].includes(status);
 }
 
 function App() {
@@ -119,6 +127,7 @@ function MarketApp() {
   });
   const chatRef = useRef(null);
   const searchRef = useRef(null);
+  const syncRef = useRef(null);
 
   const announce = useCallback((message) => {
     setNotice(message);
@@ -168,6 +177,27 @@ function MarketApp() {
   }, [authReady, loadProducts, user]);
 
   useEffect(() => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return undefined;
+    setPushEnabled(true);
+    if (!apiPushReady || !VAPID_PUBLIC_KEY || !('serviceWorker' in navigator)) return undefined;
+    if (firebaseEnabled && !user) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const registration = await navigator.serviceWorker.ready;
+        const existing = await registration.pushManager.getSubscription();
+        if (!existing || cancelled) return;
+        await request('/api/push/subscribe', {
+          method: 'POST', body: JSON.stringify(existing)
+        }, user);
+      } catch (error) {
+        console.warn('Could not refresh the push subscription:', error);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [apiPushReady, user]);
+
+  useEffect(() => {
     if (!authReady || user) return;
     let destination = '/login';
     if (!firebaseEnabled) {
@@ -212,18 +242,64 @@ function MarketApp() {
   }, [online, user]);
 
   async function syncQueuedOrders() {
-    const queue = JSON.parse(localStorage.getItem('meathub-order-queue') || '[]');
-    const remaining = [];
-    for (const order of queue) {
+    if (syncRef.current) return syncRef.current;
+    const run = (async () => {
       try {
-        await request('/api/orders', { method: 'POST', body: JSON.stringify(order) }, user);
+        await migrateLegacyQueue(API_URL);
       } catch (error) {
-        remaining.push(order);
-        announce(`An offline delivery is still waiting to sync: ${error.message}`);
+        console.warn('Could not move the old offline queue into IndexedDB:', error);
       }
+      let queued;
+      try {
+        queued = await listQueuedOrders();
+      } catch (error) {
+        announce(`Could not read the offline order queue: ${error.message}`);
+        return;
+      }
+      if (!queued.length) return;
+      const freshToken = user && firebaseEnabled ? await user.getIdToken().catch(() => null) : null;
+      let synced = 0;
+      for (const record of queued) {
+        if (!(await claimQueuedOrder(record.id).catch(() => false))) continue;
+        const token = freshToken || record.token;
+        try {
+          const response = await fetch(`${record.apiUrl ?? API_URL}/api/orders`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { Authorization: `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify(record.order)
+          });
+          if (response.ok) {
+            await removeQueuedOrder(record.id);
+            synced += 1;
+            continue;
+          }
+          const body = await response.json().catch(() => ({}));
+          if (isPermanentOrderFailure(response.status)) {
+            await removeQueuedOrder(record.id);
+            announce(`An offline delivery could not be placed: ${body.error || `Request failed (${response.status}).`}`);
+            continue;
+          }
+          throw new Error(body.error || `Request failed (${response.status}).`);
+        } catch (error) {
+          console.warn('An offline delivery is still waiting to sync:', error);
+        }
+      }
+      if (synced) {
+        announce(synced === 1
+          ? 'Your offline delivery has synced. Open My deliveries for its links.'
+          : `${synced} offline deliveries have synced. Open My deliveries for their links.`);
+        loadProducts();
+      }
+    })();
+    syncRef.current = run;
+    try {
+      return await run;
+    } finally {
+      syncRef.current = null;
     }
-    localStorage.setItem('meathub-order-queue', JSON.stringify(remaining));
-    if (queue.length && !remaining.length) announce('Your offline delivery has synced. Open My deliveries for its links.');
   }
 
   useEffect(() => {
@@ -358,8 +434,13 @@ function MarketApp() {
       paymentMethod: 'cod'
     };
     if (!online) {
-      const queue = JSON.parse(localStorage.getItem('meathub-order-queue') || '[]');
-      localStorage.setItem('meathub-order-queue', JSON.stringify([...queue, order]));
+      try {
+        const token = user && firebaseEnabled ? await user.getIdToken().catch(() => null) : null;
+        await enqueueOrder({ order, apiUrl: API_URL, token });
+      } catch (error) {
+        announce(`Could not save this delivery on your device: ${error.message}`);
+        return;
+      }
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.ready.then((registration) => registration.sync?.register('meathub-reservations'))
           .catch((error) => console.warn('Background reservation sync is unavailable:', error));
@@ -445,23 +526,32 @@ function MarketApp() {
       return;
     }
     setPushEnabled(true);
-    if (apiPushReady && import.meta.env.VITE_VAPID_PUBLIC_KEY && 'serviceWorker' in navigator) {
-      try {
-        const registration = await navigator.serviceWorker.ready;
-        const subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: decodeBase64Key(import.meta.env.VITE_VAPID_PUBLIC_KEY)
-        });
-        await request('/api/push/subscribe', {
-          method: 'POST', body: JSON.stringify(subscription)
-        }, user);
-        announce('Push notifications are enabled.');
-      } catch (error) {
-        announce(`Could not enable push notifications: ${error.message}`);
-      }
+    if (!apiPushReady || !VAPID_PUBLIC_KEY) {
+      announce('On-device notifications are on. Push while the app is closed needs VAPID keys on the server and VITE_VAPID_PUBLIC_KEY in the client.');
       return;
     }
-    announce('Browser notifications enabled on this device.');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      announce('This browser can show notifications but does not support background push.');
+      return;
+    }
+    if (firebaseEnabled && !user) {
+      announce('Sign in first so push updates are linked to your MeatHub account.');
+      return;
+    }
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription()
+        || await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeBase64Key(VAPID_PUBLIC_KEY)
+        });
+      await request('/api/push/subscribe', {
+        method: 'POST', body: JSON.stringify(subscription)
+      }, user);
+      announce('Push notifications are enabled.');
+    } catch (error) {
+      announce(`Could not enable push notifications: ${error.message}`);
+    }
   }
 
   function sendChat(event) {
@@ -504,7 +594,7 @@ function MarketApp() {
           <a href="#story">Our story</a>
         </nav>
         <div className="header-actions">
-          <button className="icon-button notification-button" aria-label="Enable notifications" onClick={enableNotifications}>
+          <button className="icon-button notification-button" aria-label={pushEnabled ? 'Notifications enabled' : 'Enable notifications'} onClick={enableNotifications}>
             <Bell size={19} />
           </button>
           <button className="orders-button" onClick={openOrders}>
