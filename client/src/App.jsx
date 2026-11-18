@@ -5,11 +5,13 @@ import {
   ShoppingBag, SlidersHorizontal, Sparkles, Sprout, Truck, X
 } from 'lucide-react';
 import {
-  onAuthStateChanged, signInWithPopup, signOut
-} from 'firebase/auth';
-import { auth, firebaseEnabled, googleProvider } from './firebase.js';
+  onAuthStateChanged, signOut
+} from '@firebase/auth';
+import { auth, firebaseEnabled } from './firebase.js';
 import { CourierPage, TrackingPage } from './DeliveryPages.jsx';
 import { isPhilippinesLocation } from './delivery.js';
+import LoginPage from './LoginPage.jsx';
+import SignupPage from './SignupPage.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const DeliveryMap = lazy(() => import('./DeliveryMap.jsx'));
@@ -37,22 +39,6 @@ async function request(path, options = {}, user = null) {
   return response.status === 204 ? null : response.json();
 }
 
-function startEditListing(product) {
-  setEditingProduct(product);
-  setListingForm({
-    name: product.name,
-    farm: product.farm,
-    category: product.category,
-    price: String(product.price),
-    unit: product.unit,
-    stock: String(product.stock),
-    location: product.location,
-    description: product.description,
-    image: product.image
-  });
-  setListingOpen(true);
-}
-
 function money(value) {
   return new Intl.NumberFormat('en-PH', {
     style: 'currency', currency: 'PHP', maximumFractionDigits: 0
@@ -65,6 +51,24 @@ function localDateString(date = new Date()) {
 }
 
 function App() {
+  if (window.location.pathname === '/login' || window.location.pathname === '/login/') {
+    if (!firebaseEnabled) {
+      try {
+        const accounts = JSON.parse(localStorage.getItem('meathub-demo-accounts') || '[]');
+        if (!Array.isArray(accounts) || accounts.length === 0) {
+          window.location.replace('/signup');
+          return null;
+        }
+      } catch {
+        window.location.replace('/signup');
+        return null;
+      }
+    }
+    return <LoginPage />;
+  }
+  if (window.location.pathname === '/signup' || window.location.pathname === '/signup/') {
+    return <SignupPage />;
+  }
   const trackingMatch = window.location.pathname.match(/^\/track\/([A-Za-z0-9_-]+)\/?$/);
   if (trackingMatch) return <TrackingPage token={trackingMatch[1]} />;
   const courierMatch = window.location.pathname.match(/^\/courier\/([A-Za-z0-9_-]+)\/?$/);
@@ -85,7 +89,19 @@ function MarketApp() {
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [chatText, setChatText] = useState('');
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(() => {
+    if (firebaseEnabled) return null;
+    try {
+      const currentUser = JSON.parse(localStorage.getItem('meathub-demo-user') || 'null');
+      const accounts = JSON.parse(localStorage.getItem('meathub-demo-accounts') || '[]');
+      return Array.isArray(accounts) && accounts.some((account) => account.uid === currentUser?.uid)
+        ? currentUser
+        : null;
+    } catch {
+      return null;
+    }
+  });
+  const [authReady, setAuthReady] = useState(!firebaseEnabled);
   const [notice, setNotice] = useState('');
   const [online, setOnline] = useState(navigator.onLine);
   const [pushEnabled, setPushEnabled] = useState(false);
@@ -138,10 +154,32 @@ function MarketApp() {
   }, [announce]);
 
   useEffect(() => {
+    if (!firebaseEnabled) return undefined;
+    return onAuthStateChanged(auth, (authenticatedUser) => {
+      setUser(authenticatedUser);
+      setAuthReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !user) return;
     loadProducts();
     request('/api/health').then((health) => setApiPushReady(health.pushEnabled)).catch(() => {});
-    if (firebaseEnabled) return onAuthStateChanged(auth, setUser);
-  }, [loadProducts]);
+  }, [authReady, loadProducts, user]);
+
+  useEffect(() => {
+    if (!authReady || user) return;
+    let destination = '/login';
+    if (!firebaseEnabled) {
+      try {
+        const accounts = JSON.parse(localStorage.getItem('meathub-demo-accounts') || '[]');
+        destination = Array.isArray(accounts) && accounts.length ? '/login' : '/signup';
+      } catch {
+        destination = '/signup';
+      }
+    }
+    if (window.location.pathname !== destination) window.location.replace(destination);
+  }, [authReady, user]);
 
   useEffect(() => {
     localStorage.setItem('meathub-favorites', JSON.stringify(favorites));
@@ -150,8 +188,10 @@ function MarketApp() {
   useEffect(() => {
     const handleOnline = () => {
       setOnline(true);
-      syncQueuedOrders();
-      loadProducts();
+      if (user) {
+        syncQueuedOrders();
+        loadProducts();
+      }
     };
     const handleOffline = () => setOnline(false);
     const handleServiceWorkerMessage = (event) => {
@@ -168,7 +208,7 @@ function MarketApp() {
   }, [loadProducts, user]);
 
   useEffect(() => {
-    if (online) syncQueuedOrders();
+    if (online && user) syncQueuedOrders();
   }, [online, user]);
 
   async function syncQueuedOrders() {
@@ -265,6 +305,22 @@ function MarketApp() {
     } catch (error) {
       announce(`Couldn't create a courier link: ${error.message}`);
     }
+  }
+
+  function startEditListing(product) {
+    setEditingProduct(product);
+    setListingForm({
+      name: product.name,
+      farm: product.farm,
+      category: product.category,
+      price: String(product.price),
+      unit: product.unit,
+      stock: String(product.stock),
+      location: product.location,
+      description: product.description,
+      image: product.image
+    });
+    setListingOpen(true);
   }
 
   function addToCart(product) {
@@ -366,11 +422,12 @@ function MarketApp() {
   async function handleSignIn() {
     try {
       if (user) {
-        await signOut(auth);
+        if (firebaseEnabled) await signOut(auth);
+        else localStorage.removeItem('meathub-demo-user');
+        setUser(null);
         announce('You are signed out.');
       } else {
-        await signInWithPopup(auth, googleProvider);
-        announce('Welcome to MeatHub.');
+        window.location.assign('/login');
       }
     } catch (error) {
       announce(`Sign in failed: ${error.message}`);
@@ -421,6 +478,15 @@ function MarketApp() {
     setChatText('');
   }
 
+  if (!authReady || !user) {
+    return (
+      <main className="auth-gate" aria-live="polite">
+        <span className="brand-mark"><Beef size={22} strokeWidth={1.8} /></span>
+        <p>Checking your MeatHub account…</p>
+      </main>
+    );
+  }
+
   return (
     <div className="app-shell">
       <div className="announcement">
@@ -444,10 +510,19 @@ function MarketApp() {
           <button className="orders-button" onClick={openOrders}>
             <MapPin size={16} /><span>My deliveries</span>
           </button>
-          {firebaseEnabled && (
+          {user ? (
             <button className="signin-button" onClick={handleSignIn}>
-              <CircleUserRound size={17} /> {user ? 'Sign out' : 'Sign in'}
+              <CircleUserRound size={17} /> Sign out
             </button>
+          ) : (
+            <>
+              <button className="signin-button" onClick={() => window.location.assign('/login')}>
+                <CircleUserRound size={17} /> Sign in
+              </button>
+              <button className="signup-button" onClick={() => window.location.assign('/signup')}>
+                Sign up
+              </button>
+            </>
           )}
           <button className="bag-button" onClick={() => setCartOpen(true)} aria-label={`Open bag, ${cartCount} items`}>
             <ShoppingBag size={18} /><span>My bag</span><b>{cartCount}</b>
