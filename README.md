@@ -22,7 +22,9 @@ The default `DATA_MODE=demo` runs with sample products and a local JSON store at
 
 The backend verifies Firebase ID tokens and uses the Admin SDK, which bypasses Firestore Security Rules. The web client does not access Firestore directly, so the included rules deny all client SDK access. Never put Admin credentials in `client/.env.local`, commit a service-account key, or share that key. The web-app API key/config is intended for client identification; secure data access is enforced by backend authentication and Firestore rules.
 
-In Firebase mode, API write requests require a Firebase ID token. Product and order data are stored in Firestore. Users can create listings and delivery orders after signing in. The included composite index supports listing a customer's non-archived orders.
+In Firebase mode, API write requests require a Firebase ID token. Product, order, and account-role data are stored in Firestore. Users can create listings and delivery orders after signing in. The included composite indexes support each customer's non-archived orders and each seller's active listings.
+
+New accounts choose either buyer or seller. Buyers get the marketplace and delivery features; sellers get a dashboard limited to their own listings. In Firebase mode, the API stores the account role in Firestore and enforces role-specific actions. Demo mode stores accounts locally and is not suitable for real users or production.
 
 For production builds, set `VITE_API_URL` in the client environment to the API's base URL (or serve the API behind the same-origin `/api` and `/ws` reverse-proxy routes). Configure `CLIENT_ORIGIN` on the API to match the browser origin.
 
@@ -43,7 +45,7 @@ Rate limits are in-memory per API instance, and the chat relay is in-memory: mes
 - Place cash-on-delivery orders with a delivery address, date, and map-selected destination in the Philippines.
 - Track order stages and the destination on a shareable tracking page.
 - Share a per-order courier link to update delivery stages and stream device GPS while the courier page is open. Courier links are revocable by creating a replacement; share them only with the assigned courier.
-- Sellers can add a listing; listings can be archived rather than deleted.
+- Sellers have a dashboard for their active listings and stock, and can add, edit, or archive their products. Buyers see the marketplace and their deliveries instead.
 - Orders are created through the API and stock is checked/decremented.
 - Reservations record an estimated platform commission (10% by default, configurable with `PLATFORM_COMMISSION_RATE`); the demo does not collect or transfer payment.
 - A WebSocket chat room works while the API is running.

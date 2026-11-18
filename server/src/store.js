@@ -312,9 +312,45 @@ if (!isDemo) {
 
 export const demoMode = isDemo;
 
-export async function listProducts() {
-  if (isDemo) return memory.products.filter((product) => !product.archived);
-  const snapshot = await db.collection('products').where('archived', '==', false).get();
+export async function getAccountRole(uid) {
+  const reference = db.collection('users').doc(uid);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(reference);
+    if (snapshot.exists) {
+      const role = snapshot.data().role;
+      if (role === 'buyer' || role === 'seller') return role;
+      if (role) throw new Error(`Account ${uid} has an invalid role.`);
+    }
+    transaction.set(reference, { role: 'buyer', createdAt: new Date().toISOString() }, { merge: true });
+    return 'buyer';
+  });
+}
+
+export async function registerAccountRole(uid, role) {
+  const reference = db.collection('users').doc(uid);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(reference);
+    if (snapshot.exists && snapshot.data().role) {
+      if (snapshot.data().role !== role) {
+        throw new Error('Account role cannot be changed after registration.');
+      }
+      return role;
+    }
+    transaction.set(reference, { role, createdAt: new Date().toISOString() }, { merge: true });
+    return role;
+  });
+}
+
+export async function listProducts(ownerUid = null) {
+  if (isDemo) {
+    return memory.products.filter((product) =>
+      !product.archived && (!ownerUid || product.ownerUid === ownerUid));
+  }
+  let query = db.collection('products').where('archived', '==', false);
+  if (ownerUid) query = db.collection('products')
+    .where('ownerUid', '==', ownerUid)
+    .where('archived', '==', false);
+  const snapshot = await query.get();
   return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
 }
 
