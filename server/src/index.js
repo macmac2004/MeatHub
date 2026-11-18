@@ -4,6 +4,8 @@ import express from 'express';
 import webpush from 'web-push';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { getAuth } from 'firebase-admin/auth';
 import { WebSocketServer } from 'ws';
 import {
@@ -29,7 +31,11 @@ const app = express();
 const server = createServer(app);
 const port = Number(process.env.PORT || 4000);
 const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const clientDistPath = fileURLToPath(new URL('../../client/dist', import.meta.url));
 const hasPushKeys = Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
 if (hasPushKeys) {
   webpush.setVapidDetails(
@@ -40,7 +46,49 @@ if (hasPushKeys) {
 }
 
 app.use(cors({ origin: clientOrigin }));
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
+
+const writeRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: 'Too many requests. Please slow down and try again shortly.'
+});
+app.use('/api', (req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  return writeRateLimiter(req, res, next);
+});
+
+function createRateLimiter({ windowMs, max, message }) {
+  const hits = new Map();
+  setInterval(() => {
+    const cutoff = Date.now() - windowMs;
+    for (const [key, entry] of hits) {
+      if (entry.start < cutoff) hits.delete(key);
+    }
+  }, windowMs).unref();
+  return (req, res, next) => {
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const entry = hits.get(key);
+    if (!entry || now - entry.start >= windowMs) {
+      hits.set(key, { start: now, count: 1 });
+      return next();
+    }
+    entry.count += 1;
+    if (entry.count > max) {
+      res.setHeader('Retry-After', String(Math.ceil((entry.start + windowMs - now) / 1000)));
+      return res.status(429).json({ error: message });
+    }
+    return next();
+  };
+}
 
 async function authenticate(req, res, next) {
   if (demoMode) {
@@ -284,18 +332,64 @@ async function sendPushToSubscribers(payload) {
   }));
 }
 
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API route not found.' });
+});
+
+if (existsSync(clientDistPath)) {
+  app.use(express.static(clientDistPath, {
+    index: false,
+    setHeaders: (response, filePath) => {
+      response.setHeader('Cache-Control', /[\\/]assets[\\/]/.test(filePath)
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache');
+    }
+  }));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile('index.html', { root: clientDistPath }, (error) => (error ? next(error) : undefined));
+  });
+}
+
 app.use((error, _req, res, _next) => {
   console.error('API request failed:', error);
   res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
 
-const websocketServer = new WebSocketServer({ server, path: '/ws' });
-websocketServer.on('connection', (socket) => {
+const websocketServer = new WebSocketServer({ server, path: '/ws', maxPayload: 8 * 1024 });
+
+async function authorizeSocket(socket, request) {
+  if (demoMode) {
+    socket.user = { uid: 'demo-customer' };
+    return true;
+  }
+  const token = new URL(request.url || '/ws', 'http://localhost').searchParams.get('token');
+  if (!token) {
+    socket.close(4401, 'Sign in is required.');
+    return false;
+  }
+  try {
+    socket.user = await getAuth().verifyIdToken(token);
+    return true;
+  } catch (error) {
+    console.warn('Chat token verification failed:', error.message);
+    socket.close(4401, 'Your session expired. Please sign in again.');
+    return false;
+  }
+}
+
+websocketServer.on('connection', async (socket, request) => {
+  if (!(await authorizeSocket(socket, request))) return;
+  if (socket.readyState !== 1) return;
+
   socket.send(JSON.stringify({
     type: 'system',
     id: randomUUID(),
     text: 'You are connected to the MeatHub community chat.'
   }));
+
+  const recentMessages = [];
   socket.on('message', (raw) => {
     let message;
     try {
@@ -305,10 +399,22 @@ websocketServer.on('connection', (socket) => {
       return;
     }
     if (typeof message.text !== 'string' || !message.text.trim() || message.text.length > 500) return;
+
+    const now = Date.now();
+    while (recentMessages.length && now - recentMessages[0] > 5000) recentMessages.shift();
+    if (recentMessages.length >= 5) {
+      socket.send(JSON.stringify({ type: 'error', text: 'You are sending messages too quickly. Please wait a moment.' }));
+      return;
+    }
+    recentMessages.push(now);
+
+    const senderName = typeof socket.user?.name === 'string' && socket.user.name.trim()
+      ? socket.user.name
+      : typeof message.name === 'string' ? message.name : 'MeatHub member';
     const event = JSON.stringify({
       type: 'message',
       id: randomUUID(),
-      name: typeof message.name === 'string' ? message.name.slice(0, 40) : 'MeatHub member',
+      name: senderName.slice(0, 40),
       text: message.text.trim(),
       sentAt: new Date().toISOString()
     });

@@ -304,30 +304,47 @@ function MarketApp() {
 
   useEffect(() => {
     if (!chatOpen) return undefined;
-    const apiBase = API_URL || `${window.location.protocol}//${window.location.hostname}:4000`;
-    const socketUrl = new URL('/ws', apiBase);
-    socketUrl.protocol = socketUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(socketUrl);
-    chatRef.current = socket;
-    socket.addEventListener('open', () => {
-      setMessages((current) => [...current, {
-        id: `joined-${Date.now()}`, type: 'system', text: 'Connected to the MeatHub community.'
-      }]);
-    });
-    socket.addEventListener('message', (event) => {
+    let cancelled = false;
+    let socket;
+    (async () => {
       try {
-        const message = JSON.parse(event.data);
-        setMessages((current) => [...current, message].slice(-50));
+        const apiBase = API_URL || `${window.location.protocol}//${window.location.hostname}:4000`;
+        const socketUrl = new URL('/ws', apiBase);
+        socketUrl.protocol = socketUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+        if (firebaseEnabled && user) {
+          socketUrl.searchParams.set('token', await user.getIdToken());
+        }
+        if (cancelled) return;
+        socket = new WebSocket(socketUrl);
+        chatRef.current = socket;
+        socket.addEventListener('open', () => {
+          setMessages((current) => [...current, {
+            id: `joined-${Date.now()}`, type: 'system', text: 'Connected to the MeatHub community.'
+          }]);
+        });
+        socket.addEventListener('message', (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            setMessages((current) => [...current, message].slice(-50));
+          } catch (error) {
+            console.error('Could not read chat message:', error);
+          }
+        });
+        socket.addEventListener('close', (event) => {
+          if (event.code === 4401) announce(event.reason || 'Sign in again to use chat.');
+          else if (!cancelled) announce('Chat disconnected.');
+        });
+        socket.addEventListener('error', () => announce('Chat is unavailable right now.'));
       } catch (error) {
-        console.error('Could not read chat message:', error);
+        announce(`Chat is unavailable: ${error.message}`);
       }
-    });
-    socket.addEventListener('error', () => announce('Chat is unavailable right now.'));
+    })();
     return () => {
-      socket.close();
+      cancelled = true;
+      socket?.close();
       chatRef.current = null;
     };
-  }, [chatOpen, announce]);
+  }, [chatOpen, announce, user]);
 
   const filteredProducts = useMemo(() => products.filter((product) => {
     const matchesCategory = activeCategory === 'All cuts' || product.category === activeCategory;

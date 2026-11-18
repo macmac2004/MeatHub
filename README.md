@@ -26,6 +26,17 @@ In Firebase mode, API write requests require a Firebase ID token. Product and or
 
 For production builds, set `VITE_API_URL` in the client environment to the API's base URL (or serve the API behind the same-origin `/api` and `/ws` reverse-proxy routes). Configure `CLIENT_ORIGIN` on the API to match the browser origin.
 
+## Deploy
+
+1. Build the client with production values: `npm run build`. Vite bakes `VITE_*` variables in at build time, so set `VITE_FIREBASE_*` and `VITE_VAPID_PUBLIC_KEY` (and `VITE_API_URL` only if the API is on a different origin) before this step.
+2. Start the API with `NODE_ENV=production npm start`. When `client/dist` exists, Express serves it with SPA fallbacks for `/login`, `/signup`, `/track/...`, and `/courier/...`, and returns JSON 404s for unknown `/api` routes.
+3. Configure the server environment: `PORT`, `CLIENT_ORIGIN=https://your-domain`, `DATA_MODE=firebase`, `FIREBASE_PROJECT_ID` (or `GOOGLE_APPLICATION_CREDENTIALS`), `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT`. Use fresh VAPID keys for production; the local pair is for localhost only.
+4. Terminate TLS at the host or reverse proxy and forward both HTTP and WebSocket upgrades (`/ws`) to the API. Push, geolocation, and a secure chat connection require HTTPS/WSS. The API already trusts the first proxy hop for client IPs.
+5. In Firebase, add the production domain under **Authentication → Settings → Authorized domains**, enable **Email/Password** (and Google if used), and deploy the Firestore rules and indexes. Firestore starts empty; seed real listings instead of relying on demo products.
+6. Serve the PWA over HTTPS so the service worker can register. On iOS, users must add the app to the Home Screen before web push works.
+
+Rate limits are in-memory per API instance, and the chat relay is in-memory: messages are lost on restart and are not shared across multiple instances. Run a single API instance for chat, or move chat and rate limiting to a shared store before scaling horizontally. Add external monitoring for production, since the app only logs to the console.
+
 ## Included MVP behavior
 
 - Browse, search, and filter active listings; featured items are highlighted.
