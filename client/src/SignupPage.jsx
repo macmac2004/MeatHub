@@ -3,6 +3,7 @@ import { Beef, Heart, ShieldCheck, Sprout, Truck } from 'lucide-react';
 import { createUserWithEmailAndPassword, signInWithPopup, signOut, updateProfile } from '@firebase/auth';
 import { auth, firebaseEnabled, googleProvider } from './firebase.js';
 import { createDemoSalt, hashDemoPassword } from './demoAuth.js';
+import { clearPendingAccountRole, rememberPendingAccountRole, saveAccountRole } from './accountRole.js';
 
 export default function SignupPage() {
   const [busy, setBusy] = useState(false);
@@ -10,6 +11,27 @@ export default function SignupPage() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [role, setRole] = useState('buyer');
+
+  async function finishFirebaseSignup(user, accountEmail) {
+    const normalizedEmail = accountEmail.trim().toLowerCase();
+    rememberPendingAccountRole(normalizedEmail, role);
+    try {
+      await saveAccountRole(user, role);
+      clearPendingAccountRole();
+      await signOut(auth);
+      redirectToSignIn(normalizedEmail);
+    } catch (saveError) {
+      await signOut(auth);
+      if (saveError.status === 409) {
+        clearPendingAccountRole();
+        setError(`${saveError.message} Sign in with the account's existing type.`);
+        return;
+      }
+      const query = new URLSearchParams({ rolePending: '1', email: normalizedEmail });
+      window.location.assign(`/login?${query.toString()}`);
+    }
+  }
 
   function redirectToSignIn(accountEmail) {
     const query = new URLSearchParams({ created: '1', email: accountEmail });
@@ -24,8 +46,9 @@ export default function SignupPage() {
       if (firebaseEnabled) {
         const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
         await updateProfile(credential.user, { displayName: name.trim() });
-        await signOut(auth);
+        await finishFirebaseSignup(credential.user, email);
         localStorage.removeItem('meathub-demo-user');
+        return;
       } else {
         const normalizedEmail = email.trim().toLowerCase();
         const accounts = JSON.parse(localStorage.getItem('meathub-demo-accounts') || '[]');
@@ -38,6 +61,7 @@ export default function SignupPage() {
           uid: `demo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           name: name.trim(),
           email: normalizedEmail,
+          role,
           passwordSalt,
           passwordHash: await hashDemoPassword(password, passwordSalt)
         };
@@ -60,8 +84,7 @@ export default function SignupPage() {
     try {
       const credential = await signInWithPopup(auth, googleProvider);
       const accountEmail = credential.user.email || '';
-      await signOut(auth);
-      redirectToSignIn(accountEmail);
+      await finishFirebaseSignup(credential.user, accountEmail);
     } catch (signInError) {
       setError(signInError.code === 'auth/popup-closed-by-user'
         ? 'The sign-up window was closed. Please try again.'
@@ -108,8 +131,19 @@ export default function SignupPage() {
             <label>Password
               <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={6} autoComplete="new-password" placeholder="At least 6 characters" />
             </label>
+            <fieldset className="account-role-options">
+              <legend>How will you use MeatHub?</legend>
+              <label className={role === 'buyer' ? 'account-role-option selected' : 'account-role-option'}>
+                <input type="radio" name="account-role" value="buyer" checked={role === 'buyer'} onChange={() => setRole('buyer')} />
+                <span><b>Buyer</b><small>Browse the market and place deliveries.</small></span>
+              </label>
+              <label className={role === 'seller' ? 'account-role-option selected' : 'account-role-option'}>
+                <input type="radio" name="account-role" value="seller" checked={role === 'seller'} onChange={() => setRole('seller')} />
+                <span><b>Seller</b><small>Manage your meat listings and stock.</small></span>
+              </label>
+            </fieldset>
             <button className="auth-submit" type="submit" disabled={busy}>
-              {busy ? 'Creating account…' : 'Create account'}
+              {busy ? 'Creating account…' : `Create ${role} account`}
             </button>
           </form>
           {firebaseEnabled && (

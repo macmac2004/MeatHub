@@ -196,6 +196,10 @@ async function syncQueuedOrders() {
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (record.token) headers.Authorization = `Bearer ${record.token}`;
+      if (record.demoIdentity) {
+        headers['X-Demo-User-Id'] = record.demoIdentity.uid;
+        headers['X-Demo-User-Role'] = record.demoIdentity.role;
+      }
       const response = await fetch(`${record.apiUrl || ''}/api/orders`, {
         method: 'POST',
         headers,

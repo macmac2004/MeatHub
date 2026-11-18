@@ -3,14 +3,17 @@ import { Beef, Heart, ShieldCheck, Sprout, Truck } from 'lucide-react';
 import { sendPasswordResetEmail, signInWithPopup, signInWithEmailAndPassword } from '@firebase/auth';
 import { auth, firebaseEnabled, googleProvider } from './firebase.js';
 import { createDemoSalt, hashDemoPassword } from './demoAuth.js';
+import { applyPendingAccountRole } from './accountRole.js';
 
 export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState(() => (
-    new URLSearchParams(window.location.search).get('created') === '1'
-      ? 'Account created. Sign in with your new email and password.'
-      : ''
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('rolePending') === '1') return 'Account created. Sign in to finish saving your account type.';
+      return params.get('created') === '1' ? 'Account created. Sign in with your new email and password.' : '';
+    })()
   ));
   const [email, setEmail] = useState(() => new URLSearchParams(window.location.search).get('email') || '');
   const [password, setPassword] = useState('');
@@ -23,7 +26,8 @@ export default function LoginPage() {
     setBusy(true);
     try {
       if (firebaseEnabled) {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
+        const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+        await applyPendingAccountRole(credential.user);
       } else {
         const rawAccounts = JSON.parse(localStorage.getItem('meathub-demo-accounts') || '[]');
         const account = rawAccounts.find((item) => item.email === email.trim().toLowerCase());
@@ -36,7 +40,8 @@ export default function LoginPage() {
         localStorage.setItem('meathub-demo-user', JSON.stringify({
           uid: account.uid,
           displayName: account.name,
-          email: account.email
+          email: account.email,
+          role: account.role === 'seller' ? 'seller' : 'buyer'
         }));
       }
       window.location.assign('/');
@@ -57,7 +62,8 @@ export default function LoginPage() {
     }
     setBusy(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const credential = await signInWithPopup(auth, googleProvider);
+      await applyPendingAccountRole(credential.user);
       window.location.assign('/');
     } catch (signInError) {
       setError(signInError.code === 'auth/popup-closed-by-user'

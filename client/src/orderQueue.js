@@ -27,13 +27,14 @@ export function openQueueDb() {
   });
 }
 
-export async function enqueueOrder({ order, apiUrl = '', token = null }) {
+export async function enqueueOrder({ order, apiUrl = '', token = null, demoIdentity = null }) {
   const db = await openQueueDb();
   const record = {
     id: newId(),
     order,
     apiUrl,
     token,
+    demoIdentity,
     queuedAt: new Date().toISOString()
   };
   try {
@@ -103,7 +104,7 @@ export async function removeQueuedOrder(id) {
   }
 }
 
-export async function migrateLegacyQueue(apiUrl = '') {
+export async function migrateLegacyQueue(apiUrl = '', demoIdentity = null) {
   let legacy = [];
   try {
     legacy = JSON.parse(localStorage.getItem(LEGACY_QUEUE_KEY) || '[]');
@@ -113,7 +114,7 @@ export async function migrateLegacyQueue(apiUrl = '') {
   if (!Array.isArray(legacy)) legacy = [];
   for (const order of legacy) {
     if (!order || typeof order !== 'object') continue;
-    await enqueueOrder({ order, apiUrl });
+    await enqueueOrder({ order, apiUrl, demoIdentity });
   }
   localStorage.removeItem(LEGACY_QUEUE_KEY);
 }

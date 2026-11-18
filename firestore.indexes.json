@@ -13,6 +13,20 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "products",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ownerUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "archived",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

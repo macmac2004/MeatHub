@@ -15,11 +15,13 @@ import {
   createOrder,
   createProduct,
   demoMode,
+  getAccountRole,
   getCourierOrder,
   getTrackedOrder,
   listOrders,
   listProducts,
   listSubscriptions,
+  registerAccountRole,
   saveSubscription,
   updateCourierLocation,
   updateCourierStatus,
@@ -92,7 +94,12 @@ function createRateLimiter({ windowMs, max, message }) {
 
 async function authenticate(req, res, next) {
   if (demoMode) {
-    req.user = { uid: 'demo-customer' };
+    const uid = req.get('x-demo-user-id')?.trim();
+    const role = req.get('x-demo-user-role');
+    if (!uid || uid.length > 120 || !['buyer', 'seller'].includes(role)) {
+      return res.status(401).json({ error: 'Sign in is required.' });
+    }
+    req.user = { uid, role };
     return next();
   }
   const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -104,6 +111,21 @@ async function authenticate(req, res, next) {
     console.error('Firebase token verification failed:', error.message);
     res.status(401).json({ error: 'Your session expired. Please sign in again.' });
   }
+}
+
+function requireRole(role) {
+  return async (req, res, next) => {
+    try {
+      const accountRole = demoMode ? req.user.role : await getAccountRole(req.user.uid);
+      if (accountRole !== role) {
+        return res.status(403).json({ error: `A ${role} account is required for this action.` });
+      }
+      req.user.role = accountRole;
+      return next();
+    } catch (error) {
+      return next(error);
+    }
+  };
 }
 
 function validateProduct(body) {
@@ -144,6 +166,36 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', mode: demoMode ? 'demo' : 'firebase', pushEnabled: hasPushKeys });
 });
 
+app.get('/api/profile', authenticate, async (req, res, next) => {
+  try {
+    const role = demoMode ? req.user.role : await getAccountRole(req.user.uid);
+    res.json({ role });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/profile/role', authenticate, async (req, res, next) => {
+  const { role } = req.body || {};
+  if (role !== 'buyer' && role !== 'seller') {
+    return res.status(400).json({ error: 'Choose buyer or seller as your account type.' });
+  }
+  if (demoMode) {
+    if (req.user.role !== role) {
+      return res.status(409).json({ error: 'The selected account type does not match your demo account.' });
+    }
+    return res.json({ role });
+  }
+  try {
+    res.json({ role: await registerAccountRole(req.user.uid, role) });
+  } catch (error) {
+    if (error.message.startsWith('Account role cannot be changed')) {
+      return res.status(409).json({ error: error.message });
+    }
+    return next(error);
+  }
+});
+
 app.get('/api/products', async (_req, res, next) => {
   try {
     res.json(await listProducts());
@@ -152,7 +204,15 @@ app.get('/api/products', async (_req, res, next) => {
   }
 });
 
-app.post('/api/products', authenticate, async (req, res, next) => {
+app.get('/api/products/mine', authenticate, requireRole('seller'), async (req, res, next) => {
+  try {
+    res.json(await listProducts(req.user.uid));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/products', authenticate, requireRole('seller'), async (req, res, next) => {
   const invalid = validateProduct(req.body);
   if (invalid) return res.status(400).json({ error: invalid });
   try {
@@ -162,7 +222,7 @@ app.post('/api/products', authenticate, async (req, res, next) => {
   }
 });
 
-app.patch('/api/products/:id', authenticate, async (req, res, next) => {
+app.patch('/api/products/:id', authenticate, requireRole('seller'), async (req, res, next) => {
   const invalid = validateProduct(req.body);
   if (invalid) return res.status(400).json({ error: invalid });
   try {
@@ -175,7 +235,7 @@ app.patch('/api/products/:id', authenticate, async (req, res, next) => {
   }
 });
 
-app.post('/api/products/:id/archive', authenticate, async (req, res, next) => {
+app.post('/api/products/:id/archive', authenticate, requireRole('seller'), async (req, res, next) => {
   try {
     const archived = await archiveProduct(req.params.id, req.user.uid);
     if (!archived) return res.status(404).json({ error: 'Listing not found.' });
@@ -186,7 +246,7 @@ app.post('/api/products/:id/archive', authenticate, async (req, res, next) => {
   }
 });
 
-app.get('/api/orders', authenticate, async (req, res, next) => {
+app.get('/api/orders', authenticate, requireRole('buyer'), async (req, res, next) => {
   try {
     res.json(await listOrders(req.user.uid));
   } catch (error) {
@@ -194,7 +254,7 @@ app.get('/api/orders', authenticate, async (req, res, next) => {
   }
 });
 
-app.post('/api/orders', authenticate, async (req, res, next) => {
+app.post('/api/orders', authenticate, requireRole('buyer'), async (req, res, next) => {
   const { items, deliveryDate, deliveryAddress, deliveryLocation, paymentMethod } = req.body || {};
   if (!Array.isArray(items) || items.length === 0 ||
       items.some((item) => !item || typeof item.productId !== 'string' || !item.productId.trim() || !Number.isInteger(item.quantity) || item.quantity < 1) ||
@@ -285,7 +345,7 @@ app.patch('/api/courier/:courierToken/status', async (req, res, next) => {
   }
 });
 
-app.post('/api/orders/:id/courier-link', authenticate, async (req, res, next) => {
+app.post('/api/orders/:id/courier-link', authenticate, requireRole('buyer'), async (req, res, next) => {
   try {
     const link = await createCourierLink(req.params.id, req.user.uid);
     if (!link) return res.status(404).json({ error: 'Active delivery order was not found.' });
@@ -295,7 +355,7 @@ app.post('/api/orders/:id/courier-link', authenticate, async (req, res, next) =>
   }
 });
 
-app.post('/api/orders/:id/archive', authenticate, async (req, res, next) => {
+app.post('/api/orders/:id/archive', authenticate, requireRole('buyer'), async (req, res, next) => {
   try {
     const archived = await archiveOrder(req.params.id, req.user.uid);
     if (!archived) return res.status(404).json({ error: 'Delivery order was not found or can no longer be cancelled.' });
@@ -305,7 +365,7 @@ app.post('/api/orders/:id/archive', authenticate, async (req, res, next) => {
   }
 });
 
-app.post('/api/push/subscribe', authenticate, async (req, res, next) => {
+app.post('/api/push/subscribe', authenticate, requireRole('buyer'), async (req, res, next) => {
   if (!hasPushKeys) return res.status(503).json({ error: 'Web Push is not configured on this server.' });
   if (!req.body?.endpoint || !req.body?.keys?.p256dh || !req.body?.keys?.auth) {
     return res.status(400).json({ error: 'Invalid push subscription.' });

@@ -34,7 +34,12 @@ const initialForm = {
 
 async function request(path, options = {}, user = null) {
   const headers = { 'Content-Type': 'application/json', ...options.headers };
-  if (user && firebaseEnabled) headers.Authorization = `Bearer ${await user.getIdToken()}`;
+  if (user && firebaseEnabled) {
+    headers.Authorization = `Bearer ${await user.getIdToken()}`;
+  } else if (user) {
+    headers['X-Demo-User-Id'] = user.uid;
+    headers['X-Demo-User-Role'] = user.role || 'buyer';
+  }
   const response = await fetch(`${API_URL}${path}`, { ...options, headers });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -103,12 +108,24 @@ function MarketApp() {
       const currentUser = JSON.parse(localStorage.getItem('meathub-demo-user') || 'null');
       const accounts = JSON.parse(localStorage.getItem('meathub-demo-accounts') || '[]');
       return Array.isArray(accounts) && accounts.some((account) => account.uid === currentUser?.uid)
-        ? currentUser
+        ? { ...currentUser, role: currentUser.role === 'seller' ? 'seller' : 'buyer' }
         : null;
     } catch {
       return null;
     }
   });
+  const [accountRole, setAccountRole] = useState(() => {
+    if (firebaseEnabled) return null;
+    try {
+      return JSON.parse(localStorage.getItem('meathub-demo-user') || 'null')?.role === 'seller'
+        ? 'seller'
+        : 'buyer';
+    } catch {
+      return 'buyer';
+    }
+  });
+  const [accountRoleReady, setAccountRoleReady] = useState(!firebaseEnabled);
+  const [accountRoleError, setAccountRoleError] = useState('');
   const [authReady, setAuthReady] = useState(!firebaseEnabled);
   const [notice, setNotice] = useState('');
   const [online, setOnline] = useState(navigator.onLine);
@@ -136,48 +153,80 @@ function MarketApp() {
   }, []);
 
   const loadProducts = useCallback(async () => {
+    const sellerMode = accountRole === 'seller';
+    const productPath = sellerMode ? '/api/products/mine' : '/api/products';
+    const cacheKey = sellerMode ? `meathub-seller-products-${user?.uid}` : 'meathub-products';
     try {
-      const data = await request('/api/products');
+      const data = await request(productPath, {}, user);
       setProducts(data);
       try {
-        localStorage.setItem('meathub-products', JSON.stringify(data));
+        localStorage.setItem(cacheKey, JSON.stringify(data));
       } catch (error) {
         console.warn('Could not save an offline catalog copy:', error);
       }
     } catch (error) {
       try {
-        const cached = JSON.parse(localStorage.getItem('meathub-products') || 'null');
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
         if (Array.isArray(cached)) {
           setProducts(cached);
-          announce('Showing your saved market. Delivery orders will sync when you are online.');
+          announce(sellerMode
+            ? 'Showing your saved listings. Changes need a connection to sync.'
+            : 'Showing your saved market. Delivery orders will sync when you are online.');
         } else {
-          announce(`Couldn't load products: ${error.message}`);
+          announce(`Couldn't load ${sellerMode ? 'your listings' : 'products'}: ${error.message}`);
         }
       } catch (cacheError) {
         console.error('Could not read the saved offline catalog:', cacheError);
-        announce(`Couldn't load products: ${error.message}`);
+        announce(`Couldn't load ${sellerMode ? 'your listings' : 'products'}: ${error.message}`);
       }
     } finally {
       setLoading(false);
     }
-  }, [announce]);
+  }, [accountRole, announce, user]);
 
   useEffect(() => {
     if (!firebaseEnabled) return undefined;
     return onAuthStateChanged(auth, (authenticatedUser) => {
       setUser(authenticatedUser);
+      setAccountRole(authenticatedUser ? null : 'buyer');
+      setAccountRoleReady(!authenticatedUser);
+      setAccountRoleError('');
       setAuthReady(true);
     });
   }, []);
 
   useEffect(() => {
-    if (!authReady || !user) return;
-    loadProducts();
-    request('/api/health').then((health) => setApiPushReady(health.pushEnabled)).catch(() => {});
-  }, [authReady, loadProducts, user]);
+    if (!authReady || !user) return undefined;
+    if (!firebaseEnabled) {
+      setAccountRole(user.role === 'seller' ? 'seller' : 'buyer');
+      setAccountRoleReady(true);
+      return undefined;
+    }
+    let cancelled = false;
+    setAccountRoleReady(false);
+    setAccountRoleError('');
+    request('/api/profile', {}, user)
+      .then(({ role }) => {
+        if (role !== 'buyer' && role !== 'seller') throw new Error('Your account type is invalid.');
+        if (!cancelled) setAccountRole(role);
+      })
+      .catch((error) => {
+        if (!cancelled) setAccountRoleError(error.message);
+      })
+      .finally(() => {
+        if (!cancelled) setAccountRoleReady(true);
+      });
+    return () => { cancelled = true; };
+  }, [authReady, user]);
 
   useEffect(() => {
-    if (!('Notification' in window) || Notification.permission !== 'granted') return undefined;
+    if (!authReady || !user || !accountRoleReady || accountRoleError) return;
+    loadProducts();
+    request('/api/health').then((health) => setApiPushReady(health.pushEnabled)).catch(() => {});
+  }, [accountRole, accountRoleError, accountRoleReady, authReady, loadProducts, user]);
+
+  useEffect(() => {
+    if (accountRole !== 'buyer' || !('Notification' in window) || Notification.permission !== 'granted') return undefined;
     setPushEnabled(true);
     if (!apiPushReady || !VAPID_PUBLIC_KEY || !('serviceWorker' in navigator)) return undefined;
     if (firebaseEnabled && !user) return undefined;
@@ -195,7 +244,7 @@ function MarketApp() {
       }
     })();
     return () => { cancelled = true; };
-  }, [apiPushReady, user]);
+  }, [accountRole, apiPushReady, user]);
 
   useEffect(() => {
     if (!authReady || user) return;
@@ -219,13 +268,14 @@ function MarketApp() {
     const handleOnline = () => {
       setOnline(true);
       if (user) {
-        syncQueuedOrders();
+        if (accountRole === 'buyer') syncQueuedOrders();
         loadProducts();
       }
     };
     const handleOffline = () => setOnline(false);
     const handleServiceWorkerMessage = (event) => {
-      if (event.data?.type === 'SYNC_MEATHUB_RESERVATIONS' && navigator.onLine) syncQueuedOrders();
+      if (event.data?.type === 'SYNC_MEATHUB_RESERVATIONS' &&
+          navigator.onLine && accountRole === 'buyer') syncQueuedOrders();
     };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -235,17 +285,20 @@ function MarketApp() {
       window.removeEventListener('offline', handleOffline);
       navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
     };
-  }, [loadProducts, user]);
+  }, [accountRole, loadProducts, user]);
 
   useEffect(() => {
-    if (online && user) syncQueuedOrders();
-  }, [online, user]);
+    if (online && user && accountRole === 'buyer') syncQueuedOrders();
+  }, [accountRole, online, user]);
 
   async function syncQueuedOrders() {
     if (syncRef.current) return syncRef.current;
     const run = (async () => {
       try {
-        await migrateLegacyQueue(API_URL);
+        const demoIdentity = !firebaseEnabled && user
+          ? { uid: user.uid, role: user.role || 'buyer' }
+          : null;
+        await migrateLegacyQueue(API_URL, demoIdentity);
       } catch (error) {
         console.warn('Could not move the old offline queue into IndexedDB:', error);
       }
@@ -262,12 +315,19 @@ function MarketApp() {
       for (const record of queued) {
         if (!(await claimQueuedOrder(record.id).catch(() => false))) continue;
         const token = freshToken || record.token;
+        const demoIdentity = record.demoIdentity || (!firebaseEnabled && user
+          ? { uid: user.uid, role: user.role || 'buyer' }
+          : null);
         try {
           const response = await fetch(`${record.apiUrl ?? API_URL}/api/orders`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              ...(token ? { Authorization: `Bearer ${token}` } : {})
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+              ...(demoIdentity ? {
+                'X-Demo-User-Id': demoIdentity.uid,
+                'X-Demo-User-Role': demoIdentity.role
+              } : {})
             },
             body: JSON.stringify(record.order)
           });
@@ -303,7 +363,7 @@ function MarketApp() {
   }
 
   useEffect(() => {
-    if (!chatOpen) return undefined;
+    if (!chatOpen || accountRole !== 'buyer') return undefined;
     let cancelled = false;
     let socket;
     (async () => {
@@ -344,7 +404,7 @@ function MarketApp() {
       socket?.close();
       chatRef.current = null;
     };
-  }, [chatOpen, announce, user]);
+  }, [accountRole, chatOpen, announce, user]);
 
   const filteredProducts = useMemo(() => products.filter((product) => {
     const matchesCategory = activeCategory === 'All cuts' || product.category === activeCategory;
@@ -363,6 +423,13 @@ function MarketApp() {
   const cartCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
   const subtotal = cartItems.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
   const featuredProducts = products.filter((product) => product.featured).slice(0, 3);
+  const sellerOwnerUid = user?.uid;
+  const sellerProducts = useMemo(
+    () => products.filter((product) => product.ownerUid === sellerOwnerUid),
+    [products, sellerOwnerUid]
+  );
+  const sellerStock = sellerProducts.reduce((total, product) => total + product.stock, 0);
+  const lowStockListings = sellerProducts.filter((product) => product.stock <= 5).length;
 
   async function loadOrders() {
     setOrdersLoading(true);
@@ -453,7 +520,10 @@ function MarketApp() {
     if (!online) {
       try {
         const token = user && firebaseEnabled ? await user.getIdToken().catch(() => null) : null;
-        await enqueueOrder({ order, apiUrl: API_URL, token });
+        const demoIdentity = !firebaseEnabled && user
+          ? { uid: user.uid, role: user.role || 'buyer' }
+          : null;
+        await enqueueOrder({ order, apiUrl: API_URL, token, demoIdentity });
       } catch (error) {
         announce(`Could not save this delivery on your device: ${error.message}`);
         return;
@@ -585,11 +655,20 @@ function MarketApp() {
     setChatText('');
   }
 
-  if (!authReady || !user) {
+  if (!authReady || !user || !accountRoleReady) {
     return (
       <main className="auth-gate" aria-live="polite">
         <span className="brand-mark"><Beef size={22} strokeWidth={1.8} /></span>
         <p>Checking your MeatHub account…</p>
+      </main>
+    );
+  }
+  if (accountRoleError) {
+    return (
+      <main className="auth-gate" role="alert">
+        <span className="brand-mark"><Beef size={22} strokeWidth={1.8} /></span>
+        <p>Could not load your account type: {accountRoleError}</p>
+        <button className="primary-button" onClick={() => window.location.reload()}>Try again</button>
       </main>
     );
   }
@@ -606,17 +685,27 @@ function MarketApp() {
           <span>meat<span>hub</span><small>LOCAL • FRESH • FAIR</small></span>
         </a>
         <nav className="desktop-nav" aria-label="Main navigation">
-          <a className="nav-active" href="#shop">Shop meat</a>
-          <a href="#farmers">Our farmers</a>
-          <a href="#story">Our story</a>
+          {accountRole === 'seller' ? (
+            <a className="nav-active" href="#seller-dashboard">Seller dashboard</a>
+          ) : (
+            <>
+              <a className="nav-active" href="#shop">Shop meat</a>
+              <a href="#farmers">Our farmers</a>
+              <a href="#story">Our story</a>
+            </>
+          )}
         </nav>
         <div className="header-actions">
-          <button className="icon-button notification-button" aria-label={pushEnabled ? 'Notifications enabled' : 'Enable notifications'} onClick={enableNotifications}>
-            <Bell size={19} />
-          </button>
-          <button className="orders-button" onClick={openOrders}>
-            <MapPin size={16} /><span>My deliveries</span>
-          </button>
+          {accountRole === 'buyer' && (
+            <>
+              <button className="icon-button notification-button" aria-label={pushEnabled ? 'Notifications enabled' : 'Enable notifications'} onClick={enableNotifications}>
+                <Bell size={19} />
+              </button>
+              <button className="orders-button" onClick={openOrders}>
+                <MapPin size={16} /><span>My deliveries</span>
+              </button>
+            </>
+          )}
           {user ? (
             <button className="signin-button" onClick={handleSignIn}>
               <CircleUserRound size={17} /> Sign out
@@ -631,13 +720,71 @@ function MarketApp() {
               </button>
             </>
           )}
-          <button className="bag-button" onClick={() => setCartOpen(true)} aria-label={`Open bag, ${cartCount} items`}>
-            <ShoppingBag size={18} /><span>My bag</span><b>{cartCount}</b>
-          </button>
+          {accountRole === 'buyer' && (
+            <button className="bag-button" onClick={() => setCartOpen(true)} aria-label={`Open bag, ${cartCount} items`}>
+              <ShoppingBag size={18} /><span>My bag</span><b>{cartCount}</b>
+            </button>
+          )}
         </div>
       </header>
 
       <main>
+        {accountRole === 'seller' ? (
+          <section className="seller-dashboard" id="seller-dashboard" aria-labelledby="seller-dashboard-title">
+            <div className="seller-dashboard-heading">
+              <div>
+                <div className="eyebrow section-eyebrow">YOUR MEATHUB STORE</div>
+                <h1 id="seller-dashboard-title">Seller dashboard</h1>
+                <p>Manage your meat listings and keep your stock up to date.</p>
+              </div>
+              <button className="primary-button" onClick={() => {
+                setEditingProduct(null);
+                setListingForm(initialForm);
+                setListingOpen(true);
+              }}>
+                <Plus size={16} /> Add meat listing
+              </button>
+            </div>
+            <div className="seller-summary">
+              <div><small>Active listings</small><b>{sellerProducts.length}</b></div>
+              <div><small>Units in stock</small><b>{sellerStock}</b></div>
+              <div><small>Low stock (5 or less)</small><b>{lowStockListings}</b></div>
+            </div>
+            <div className="seller-listing-heading">
+              <h2>Your listings</h2>
+            </div>
+            {loading ? (
+              <div className="seller-empty">Loading your listings…</div>
+            ) : sellerProducts.length === 0 ? (
+              <div className="seller-empty">
+                <b>No listings yet</b>
+                <span>Add your first meat product to start selling on MeatHub.</span>
+              </div>
+            ) : (
+              <div className="seller-listings">
+                {sellerProducts.map((product) => (
+                  <article className="seller-listing" key={product.id}>
+                    <img src={product.image} alt="" />
+                    <div className="seller-listing-info">
+                      <b>{product.name}</b>
+                      <span>{product.category} · {product.location}</span>
+                      <strong>{money(product.price)} / {product.unit}</strong>
+                    </div>
+                    <div className="seller-listing-stock">
+                      <small>Stock</small>
+                      <b>{product.stock}</b>
+                    </div>
+                    <div className="seller-listing-actions">
+                      <button onClick={() => startEditListing(product)}>Edit</button>
+                      <button onClick={() => archiveListing(product)}>Archive</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : (
+          <>
         <section className="hero" id="story">
           <div className="hero-image" />
           <div className="hero-content">
@@ -667,9 +814,6 @@ function MarketApp() {
               <h2>Good things, <em>from nearby.</em></h2>
               <p>Small-batch cuts from the farms just down the road.</p>
             </div>
-            <button className="outline-button" onClick={() => setListingOpen(true)}>
-              <Plus size={16} /> Sell on MeatHub
-            </button>
           </div>
 
           <div className="market-toolbar">
@@ -696,10 +840,7 @@ function MarketApp() {
                 favorite={favorites.includes(product.id)}
                 onFavorite={() => setFavorites((current) => current.includes(product.id)
                   ? current.filter((id) => id !== product.id) : [...current, product.id])}
-                onAdd={() => addToCart(product)}
-                onArchive={() => archiveListing(product)}
-                onEdit={() => startEditListing(product)}
-                canArchive={product.ownerUid && (product.ownerUid === user?.uid || (!firebaseEnabled && product.ownerUid === 'demo-customer'))} />
+                onAdd={() => addToCart(product)} />
             ))}
             {!loading && filteredProducts.length === 0 && (
               <div className="empty-state">No cuts found just yet. Try another search or category.</div>
@@ -745,23 +886,29 @@ function MarketApp() {
             )) : <p className="muted-copy">Fresh farmer picks are on the way.</p>}
           </div>
         </section>
+          </>
+        )}
       </main>
 
       <footer className="site-footer">
         <a className="brand footer-brand" href="#"><span className="brand-mark"><Beef size={21} /></span><span>meat<span>hub</span><small>LOCAL • FRESH • FAIR</small></span></a>
         <span>Better meat. Better neighbors. © 2025 MeatHub</span>
-        <button className="footer-chat" onClick={() => setChatOpen(true)}><MessageCircle size={16} /> Chat with the community</button>
+        {accountRole === 'buyer' && (
+          <button className="footer-chat" onClick={() => setChatOpen(true)}><MessageCircle size={16} /> Chat with the community</button>
+        )}
       </footer>
 
-      <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="Open community chat">
-        {chatOpen ? <X size={21} /> : <MessageCircle size={21} />}
-        {!chatOpen && <span>Chat with us</span>}
-      </button>
+      {accountRole === 'buyer' && (
+        <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="Open community chat">
+          {chatOpen ? <X size={21} /> : <MessageCircle size={21} />}
+          {!chatOpen && <span>Chat with us</span>}
+        </button>
+      )}
 
       {notice && <div className="toast" role="status"><Check size={16} />{notice}</div>}
-      {!online && <div className="offline-pill"><span /> Offline mode · browsing saved market</div>}
+      {!online && <div className="offline-pill"><span /> Offline mode · {accountRole === 'seller' ? 'saved listings' : 'saved market'}</div>}
 
-      {cartOpen && (
+      {accountRole === 'buyer' && cartOpen && (
         <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && setCartOpen(false)}>
           <aside className="side-panel cart-panel" aria-label="Shopping bag">
             <div className="panel-heading"><div><small>YOUR MARKET BAG</small><h2>A good little haul.</h2></div><button className="icon-button" onClick={() => setCartOpen(false)} aria-label="Close bag"><X /></button></div>
@@ -806,7 +953,7 @@ function MarketApp() {
         </div>
       )}
 
-      {ordersOpen && (
+      {accountRole === 'buyer' && ordersOpen && (
         <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && setOrdersOpen(false)}>
           <aside className="side-panel orders-panel" aria-label="My deliveries">
             <div className="panel-heading">
@@ -844,7 +991,7 @@ function MarketApp() {
         </div>
       )}
 
-      {orderConfirmation && (
+      {accountRole === 'buyer' && orderConfirmation && (
         <div className="overlay modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setOrderConfirmation(null)}>
           <section className="delivery-confirmation">
             <div className="panel-heading">
@@ -865,7 +1012,7 @@ function MarketApp() {
         </div>
       )}
 
-      {listingOpen && (
+      {accountRole === 'seller' && listingOpen && (
         <div className="overlay modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setListingOpen(false)}>
           <section className="listing-modal" aria-label="Create a product listing">
             <div className="panel-heading"><div><small>GROW WITH MEATHUB</small><h2>{editingProduct ? 'Update your listing.' : 'List something good.'}</h2></div><button className="icon-button" onClick={() => { setListingOpen(false); setEditingProduct(null); setListingForm(initialForm); }} aria-label="Close listing form"><X /></button></div>
@@ -890,7 +1037,7 @@ function MarketApp() {
         </div>
       )}
 
-      {chatOpen && (
+      {accountRole === 'buyer' && chatOpen && (
         <section className="chat-window" aria-label="MeatHub community chat">
           <div className="chat-heading"><div><span className="chat-live-dot" /><span><b>MeatHub community</b><small>Ask about cuts, farms & pickup</small></span></div><button className="icon-button" onClick={() => setChatOpen(false)} aria-label="Close chat"><X size={18} /></button></div>
           <div className="chat-messages">
