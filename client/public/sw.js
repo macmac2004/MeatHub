@@ -1,5 +1,5 @@
 const CACHE_NAME = 'meathub-shell-v2';
-const APP_SHELL = ['/', '/manifest.webmanifest', '/icon.svg'];
+const APP_SHELL = ['/', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png'];
 const QUEUE_DB = 'meathub';
 const QUEUE_STORE = 'orderQueue';
 const QUEUE_SYNC_TAG = 'meathub-reservations';
