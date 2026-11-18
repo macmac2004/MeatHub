@@ -10,6 +10,7 @@
     "dev:api": "npm --workspace server run dev",
     "dev:web": "npm --workspace client run dev",
     "build": "npm --workspace client run build",
+    "test": "npm --workspace server test",
     "start": "npm --workspace server start"
   },
   "devDependencies": {

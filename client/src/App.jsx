@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight, Bell, Beef, Check, CircleUserRound, Clock3,
   Heart, Leaf, MapPin, MessageCircle, Minus, Plus, Search, ShieldCheck,
@@ -8,9 +8,19 @@ import {
   onAuthStateChanged, signInWithPopup, signOut
 } from 'firebase/auth';
 import { auth, firebaseEnabled, googleProvider } from './firebase.js';
+import { CourierPage, TrackingPage } from './DeliveryPages.jsx';
+import { isPhilippinesLocation } from './delivery.js';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
+const DeliveryMap = lazy(() => import('./DeliveryMap.jsx'));
 const categories = ['All cuts', 'Beef', 'Pork', 'Chicken', 'Lamb'];
+const deliveryStatusLabels = {
+  confirmed: 'Order confirmed',
+  preparing: 'Preparing',
+  out_for_delivery: 'Out for delivery',
+  delivered: 'Delivered',
+  cancelled: 'Cancelled'
+};
 const initialForm = {
   name: '', farm: '', category: 'Beef', price: '', unit: '500g',
   stock: '', location: '', description: '', image: ''
@@ -55,6 +65,14 @@ function localDateString(date = new Date()) {
 }
 
 function App() {
+  const trackingMatch = window.location.pathname.match(/^\/track\/([A-Za-z0-9_-]+)\/?$/);
+  if (trackingMatch) return <TrackingPage token={trackingMatch[1]} />;
+  const courierMatch = window.location.pathname.match(/^\/courier\/([A-Za-z0-9_-]+)\/?$/);
+  if (courierMatch) return <CourierPage token={courierMatch[1]} />;
+  return <MarketApp />;
+}
+
+function MarketApp() {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeCategory, setActiveCategory] = useState('All cuts');
@@ -72,7 +90,14 @@ function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [apiPushReady, setApiPushReady] = useState(false);
-  const [pickupDate, setPickupDate] = useState('');
+  const [deliveryDate, setDeliveryDate] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [deliveryLocation, setDeliveryLocation] = useState(null);
+  const [ordersOpen, setOrdersOpen] = useState(false);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [customerOrders, setCustomerOrders] = useState([]);
+  const [courierLinks, setCourierLinks] = useState({});
+  const [orderConfirmation, setOrderConfirmation] = useState(null);
   const [favorites, setFavorites] = useState(() => {
     try { return JSON.parse(localStorage.getItem('meathub-favorites') || '[]'); } catch { return []; }
   });
@@ -99,7 +124,7 @@ function App() {
         const cached = JSON.parse(localStorage.getItem('meathub-products') || 'null');
         if (Array.isArray(cached)) {
           setProducts(cached);
-          announce('Showing your saved market. New reservations will sync when you are online.');
+          announce('Showing your saved market. Delivery orders will sync when you are online.');
         } else {
           announce(`Couldn't load products: ${error.message}`);
         }
@@ -154,11 +179,11 @@ function App() {
         await request('/api/orders', { method: 'POST', body: JSON.stringify(order) }, user);
       } catch (error) {
         remaining.push(order);
-        announce(`An offline reservation is still waiting to sync: ${error.message}`);
+        announce(`An offline delivery is still waiting to sync: ${error.message}`);
       }
     }
     localStorage.setItem('meathub-order-queue', JSON.stringify(remaining));
-    if (queue.length && !remaining.length) announce('Your offline reservation has synced.');
+    if (queue.length && !remaining.length) announce('Your offline delivery has synced. Open My deliveries for its links.');
   }
 
   useEffect(() => {
@@ -206,6 +231,42 @@ function App() {
   const subtotal = cartItems.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
   const featuredProducts = products.filter((product) => product.featured).slice(0, 3);
 
+  async function loadOrders() {
+    setOrdersLoading(true);
+    try {
+      setCustomerOrders(await request('/api/orders', {}, user));
+    } catch (error) {
+      announce(`Couldn't load deliveries: ${error.message}`);
+    } finally {
+      setOrdersLoading(false);
+    }
+  }
+
+  function openOrders() {
+    if (firebaseEnabled && !user) {
+      announce('Sign in to view your deliveries.');
+      return;
+    }
+    setOrdersOpen(true);
+    loadOrders();
+  }
+
+  async function createCourierLink(order) {
+    try {
+      const { courierToken } = await request(`/api/orders/${order.id}/courier-link`, { method: 'POST' }, user);
+      const link = `${window.location.origin}/courier/${courierToken}`;
+      setCourierLinks((current) => ({ ...current, [order.id]: link }));
+      try {
+        await navigator.clipboard.writeText(link);
+        announce('A new secure courier link was copied. The previous courier link is now invalid.');
+      } catch {
+        announce('A new secure courier link is shown below. The previous courier link is now invalid.');
+      }
+    } catch (error) {
+      announce(`Couldn't create a courier link: ${error.message}`);
+    }
+  }
+
   function addToCart(product) {
     setCart((current) => ({
       ...current,
@@ -227,11 +288,18 @@ function App() {
     });
   }
 
-  async function placeReservation(event) {
+  async function placeDeliveryOrder(event) {
     event.preventDefault();
+    if (!isPhilippinesLocation(deliveryLocation)) {
+      announce('Choose a delivery pin within the Philippines map area.');
+      return;
+    }
     const order = {
       items: cartItems.map(({ product, quantity }) => ({ productId: product.id, quantity })),
-      pickupDate
+      deliveryDate,
+      deliveryAddress,
+      deliveryLocation,
+      paymentMethod: 'cod'
     };
     if (!online) {
       const queue = JSON.parse(localStorage.getItem('meathub-order-queue') || '[]');
@@ -242,18 +310,20 @@ function App() {
       }
       setCart({});
       setCartOpen(false);
-      announce('Saved on this device. Your reservation will sync when you are back online.');
+      announce('Saved on this device. Your COD delivery will sync when you are back online.');
       return;
     }
     try {
       const saved = await request('/api/orders', { method: 'POST', body: JSON.stringify(order) }, user);
       setCart({});
       setCartOpen(false);
-      setPickupDate('');
-      announce(`Pickup reserved! Order total: ${money(saved.total)}.`);
+      setDeliveryDate('');
+      setDeliveryAddress('');
+      setDeliveryLocation(null);
+      setOrderConfirmation(saved);
       await loadProducts();
       if (pushEnabled && 'Notification' in window) {
-        new Notification('MeatHub reservation confirmed', { body: 'Your pickup reservation is in.' });
+        new Notification('COD delivery confirmed', { body: 'Your delivery order is being prepared.' });
       }
     } catch (error) {
       announce(error.message);
@@ -371,6 +441,9 @@ function App() {
           <button className="icon-button notification-button" aria-label="Enable notifications" onClick={enableNotifications}>
             <Bell size={19} />
           </button>
+          <button className="orders-button" onClick={openOrders}>
+            <MapPin size={16} /><span>My deliveries</span>
+          </button>
           {firebaseEnabled && (
             <button className="signin-button" onClick={handleSignIn}>
               <CircleUserRound size={17} /> {user ? 'Sign out' : 'Sign in'}
@@ -401,7 +474,7 @@ function App() {
         <section className="trust-strip" aria-label="Marketplace benefits">
           <div><Sprout /><span><b>Raised with care</b><small>By farms you can know</small></span></div>
           <div><MapPin /><span><b>Closer to home</b><small>Supporting local growers</small></span></div>
-          <div><Truck /><span><b>Pickup, your way</b><small>Choose a day that works</small></span></div>
+          <div><Truck /><span><b>Delivery, your way</b><small>Choose a day that works</small></span></div>
           <div><Heart /><span><b>Better by nature</b><small>Quality over quantity</small></span></div>
         </section>
 
@@ -519,17 +592,94 @@ function App() {
                     <div className="quantity-control"><button onClick={() => changeQuantity(product.id, -1)} aria-label={`Remove one ${product.name}`}><Minus size={13} /></button><span>{quantity}</span><button onClick={() => changeQuantity(product.id, 1)} aria-label={`Add one ${product.name}`}><Plus size={13} /></button></div>
                   </div>
                 ))}</div>
-                <form className="checkout" onSubmit={placeReservation}>
-                  <label htmlFor="pickup-date">Choose your pickup day</label>
-                  <input id="pickup-date" type="date" min={localDateString()} required value={pickupDate} onChange={(event) => setPickupDate(event.target.value)} />
+                <form className="checkout" onSubmit={placeDeliveryOrder}>
+                  <label htmlFor="delivery-date">Choose your delivery day</label>
+                  <input id="delivery-date" type="date" min={localDateString()} required value={deliveryDate} onChange={(event) => setDeliveryDate(event.target.value)} />
+                  <label htmlFor="delivery-address">Delivery address</label>
+                  <textarea id="delivery-address" rows="2" maxLength="500" required value={deliveryAddress}
+                    onChange={(event) => setDeliveryAddress(event.target.value)} placeholder="House number, street, barangay, city or municipality" />
+                  <div className="delivery-pin-label"><MapPin size={15} /><span>Tap the map or drag the pin to your exact location</span></div>
+                  <div className="delivery-map-picker">
+                    <Suspense fallback={<div className="map-loading">Loading Philippines map…</div>}>
+                      <DeliveryMap destination={deliveryLocation} onSelect={setDeliveryLocation} />
+                    </Suspense>
+                  </div>
+                  <div className="delivery-map-hint">
+                    {deliveryLocation
+                      ? `Delivery pin: ${deliveryLocation.lat.toFixed(5)}, ${deliveryLocation.lng.toFixed(5)}`
+                      : 'Choose a destination pin on the map. The map is limited to the Philippines.'}
+                  </div>
+                  <div className="cod-payment-choice">
+                    <span className="cod-payment-icon"><Truck size={17} /></span>
+                    <span><b>Cash on delivery (COD)</b><small>Pay the courier in cash when your order arrives.</small></span>
+                    <Check size={17} />
+                  </div>
                   <div className="subtotal"><span>Subtotal</span><b>{money(subtotal)}</b></div>
-                  <div className="checkout-note"><Clock3 size={15} /> Payment and pickup details are confirmed with your local seller.</div>
-                  <button className="primary-button checkout-button" type="submit">{online ? 'Reserve for pickup' : 'Save reservation offline'} <ArrowRight size={16} /></button>
-                  <small className="commission-note">No payment is taken in this demo.</small>
+                  <div className="checkout-note"><Clock3 size={15} /> Live tracking starts when the courier shares GPS from their phone.</div>
+                  <button className="primary-button checkout-button" type="submit">{online ? 'Place COD delivery' : 'Save delivery for sync'} <ArrowRight size={16} /></button>
                 </form>
               </>
             )}
           </aside>
+        </div>
+      )}
+
+      {ordersOpen && (
+        <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && setOrdersOpen(false)}>
+          <aside className="side-panel orders-panel" aria-label="My deliveries">
+            <div className="panel-heading">
+              <div><small>YOUR MEATHUB ORDERS</small><h2>My deliveries.</h2></div>
+              <button className="icon-button" onClick={() => setOrdersOpen(false)} aria-label="Close deliveries"><X /></button>
+            </div>
+            {ordersLoading && <p className="delivery-loading">Loading your deliveries…</p>}
+            {!ordersLoading && customerOrders.length === 0 && (
+              <div className="cart-empty"><Truck size={34} /><b>No deliveries yet.</b><span>Your COD orders and tracking links will appear here.</span></div>
+            )}
+            <div className="customer-order-list">
+              {customerOrders.map((order) => (
+                <article className="customer-order-card" key={order.id}>
+                  <div className="customer-order-heading">
+                    <b>Delivery #{order.id.slice(0, 8)}</b>
+                    <span className={`order-status-pill status-${order.status}`}>{deliveryStatusLabels[order.status] || order.status}</span>
+                  </div>
+                  <p>{order.deliveryAddress}</p>
+                  <small>{new Date(`${order.deliveryDate}T00:00:00`).toLocaleDateString()} · COD · {order.paymentStatus === 'paid' ? 'Paid' : 'Pay on arrival'}</small>
+                  <div className="customer-order-actions">
+                    <a className="text-button" href={`/track/${order.trackingToken}`} target="_blank" rel="noreferrer">Track on map <ArrowRight size={14} /></a>
+                    {!['delivered', 'cancelled'].includes(order.status) && (
+                      <button className="text-button" onClick={() => createCourierLink(order)}>Create courier link</button>
+                    )}
+                  </div>
+                  {courierLinks[order.id] && (
+                    <label className="courier-link-field">Share this link with your courier
+                      <input readOnly value={courierLinks[order.id]} onFocus={(event) => event.target.select()} />
+                    </label>
+                  )}
+                </article>
+              ))}
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {orderConfirmation && (
+        <div className="overlay modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setOrderConfirmation(null)}>
+          <section className="delivery-confirmation">
+            <div className="panel-heading">
+              <div><small>COD ORDER CONFIRMED</small><h2>Your delivery is on its way.</h2></div>
+              <button className="icon-button" onClick={() => setOrderConfirmation(null)} aria-label="Close confirmation"><X /></button>
+            </div>
+            <p className="modal-intro">Order #{orderConfirmation.id.slice(0, 8)} · {money(orderConfirmation.total)} · Pay cash on arrival.</p>
+            <div className="delivery-map-picker"><Suspense fallback={<div className="map-loading">Loading Philippines map…</div>}>
+              <DeliveryMap destination={orderConfirmation.deliveryLocation} />
+            </Suspense></div>
+            <p className="delivery-address"><b>Deliver to:</b> {orderConfirmation.deliveryAddress}</p>
+            <div className="confirmation-links">
+              <a className="primary-button" href={`/track/${orderConfirmation.trackingToken}`} target="_blank" rel="noreferrer">Track your order <MapPin size={16} /></a>
+              <a className="outline-button" href={`/courier/${orderConfirmation.courierToken}`} target="_blank" rel="noreferrer">Share courier GPS link <Truck size={16} /></a>
+            </div>
+            <small className="commission-note">The courier link grants live-location and status access. Share it only with your assigned courier.</small>
+          </section>
         </div>
       )}
 

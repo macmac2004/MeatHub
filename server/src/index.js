@@ -9,15 +9,21 @@ import { WebSocketServer } from 'ws';
 import {
   archiveOrder,
   archiveProduct,
+  createCourierLink,
   createOrder,
   createProduct,
   demoMode,
+  getCourierOrder,
+  getTrackedOrder,
   listOrders,
   listProducts,
   listSubscriptions,
   saveSubscription,
+  updateCourierLocation,
+  updateCourierStatus,
   updateProduct
 } from './store.js';
+import { isPhilippinesLocation, isValidDeliveryDate } from './delivery.js';
 
 const app = express();
 const server = createServer(app);
@@ -79,6 +85,13 @@ function productFields(body) {
   };
 }
 
+function missingDeliveryLinkMessage(label) {
+  const reason = demoMode
+    ? 'It may belong to another API instance or to an order created before local persistence was enabled; place a new order for a fresh link.'
+    : 'Check that you are using a link from the correct application environment.';
+  return `${label} was not found. ${reason}`;
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', mode: demoMode ? 'demo' : 'firebase', pushEnabled: hasPushKeys });
 });
@@ -134,28 +147,32 @@ app.get('/api/orders', authenticate, async (req, res, next) => {
 });
 
 app.post('/api/orders', authenticate, async (req, res, next) => {
-  const { items, pickupDate } = req.body || {};
-  const dateParts = typeof pickupDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(pickupDate)
-    ? pickupDate.split('-').map(Number)
-    : [];
-  const date = dateParts.length === 3 ? new Date(dateParts[0], dateParts[1] - 1, dateParts[2]) : null;
-  const validDate = date &&
-    date.getFullYear() === dateParts[0] &&
-    date.getMonth() === dateParts[1] - 1 &&
-    date.getDate() === dateParts[2] &&
-    date >= new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+  const { items, deliveryDate, deliveryAddress, deliveryLocation, paymentMethod } = req.body || {};
   if (!Array.isArray(items) || items.length === 0 ||
       items.some((item) => !item || typeof item.productId !== 'string' || !item.productId.trim() || !Number.isInteger(item.quantity) || item.quantity < 1) ||
       new Set(items.map((item) => item.productId)).size !== items.length) {
-    return res.status(400).json({ error: 'Add at least one valid item to your reservation.' });
+    return res.status(400).json({ error: 'Add at least one valid item to your delivery order.' });
   }
-  if (!validDate) {
-    return res.status(400).json({ error: 'Choose a valid pickup date that is today or later.' });
+  if (!isValidDeliveryDate(deliveryDate)) {
+    return res.status(400).json({ error: 'Choose a valid delivery date that is today or later.' });
+  }
+  if (typeof deliveryAddress !== 'string' || !deliveryAddress.trim() || deliveryAddress.trim().length > 500) {
+    return res.status(400).json({ error: 'Enter a delivery address (500 characters or fewer).' });
+  }
+  if (!isPhilippinesLocation(deliveryLocation)) {
+    return res.status(400).json({ error: 'Choose a delivery pin within the Philippines map area.' });
+  }
+  if (paymentMethod !== 'cod') {
+    return res.status(400).json({ error: 'Cash on delivery is the only supported payment method.' });
   }
   try {
-    const order = await createOrder(items, pickupDate, req.user.uid);
-    sendPushToSubscribers({ title: 'MeatHub reservation', body: 'A new pickup reservation was placed.' })
-      .catch((error) => console.error('Could not send reservation notifications:', error));
+    const order = await createOrder(items, {
+      deliveryDate,
+      deliveryAddress: deliveryAddress.trim(),
+      deliveryLocation: { lat: deliveryLocation.lat, lng: deliveryLocation.lng }
+    }, req.user.uid);
+    sendPushToSubscribers({ title: 'MeatHub COD delivery', body: 'A new cash-on-delivery order was placed.' })
+      .catch((error) => console.error('Could not send delivery notifications:', error));
     res.status(201).json(order);
   } catch (error) {
     if (error.message.includes('not available') || error.message.includes('enough stock')) {
@@ -165,10 +182,75 @@ app.post('/api/orders', authenticate, async (req, res, next) => {
   }
 });
 
+app.get('/api/tracking/:trackingToken', async (req, res, next) => {
+  try {
+    const order = await getTrackedOrder(req.params.trackingToken);
+    if (!order) return res.status(404).json({ error: missingDeliveryLinkMessage('Delivery tracking link') });
+    res.json(order);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/courier/:courierToken', async (req, res, next) => {
+  try {
+    const order = await getCourierOrder(req.params.courierToken);
+    if (!order) return res.status(404).json({ error: missingDeliveryLinkMessage('Courier link') });
+    res.json(order);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/courier/:courierToken/location', async (req, res, next) => {
+  const { lat, lng } = req.body || {};
+  const location = { lat, lng };
+  if (!isPhilippinesLocation(location)) {
+    return res.status(400).json({ error: 'Courier GPS must be within the Philippines map area.' });
+  }
+  try {
+    const order = await updateCourierLocation(req.params.courierToken, location);
+    if (!order) return res.status(404).json({ error: 'Courier link was not found.' });
+    res.json(order);
+  } catch (error) {
+    if (error.message.startsWith('Live location sharing')) {
+      return res.status(409).json({ error: error.message });
+    }
+    next(error);
+  }
+});
+
+app.patch('/api/courier/:courierToken/status', async (req, res, next) => {
+  const { status, cashCollected = false } = req.body || {};
+  if (!['preparing', 'out_for_delivery', 'delivered'].includes(status) || typeof cashCollected !== 'boolean') {
+    return res.status(400).json({ error: 'Choose a valid delivery status.' });
+  }
+  try {
+    const order = await updateCourierStatus(req.params.courierToken, status, cashCollected);
+    if (!order) return res.status(404).json({ error: 'Courier link was not found.' });
+    res.json(order);
+  } catch (error) {
+    if (error.message.startsWith('Invalid delivery status') || error.message.startsWith('Collect the cash')) {
+      return res.status(409).json({ error: error.message });
+    }
+    next(error);
+  }
+});
+
+app.post('/api/orders/:id/courier-link', authenticate, async (req, res, next) => {
+  try {
+    const link = await createCourierLink(req.params.id, req.user.uid);
+    if (!link) return res.status(404).json({ error: 'Active delivery order was not found.' });
+    res.json(link);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/orders/:id/archive', authenticate, async (req, res, next) => {
   try {
     const archived = await archiveOrder(req.params.id, req.user.uid);
-    if (!archived) return res.status(404).json({ error: 'Reservation not found.' });
+    if (!archived) return res.status(404).json({ error: 'Delivery order was not found or can no longer be cancelled.' });
     res.status(204).end();
   } catch (error) {
     next(error);

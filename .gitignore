@@ -5,3 +5,4 @@ dist/
 !.env.example
 service-account*.json
 npm-debug.log*
+server/data/

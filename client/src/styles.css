@@ -217,12 +217,86 @@ h1, h2, h3, p { margin-top: 0; }
 .checkout { margin-top: 25px; }
 .checkout > label { display: block; margin-bottom: 8px; color: #59665a; font-size: 10px; font-weight: 600; }
 .checkout input { width: 100%; height: 39px; padding: 0 10px; border: 1px solid #dce2d8; background: white; color: #37473a; font-size: 11px; }
+.checkout textarea { width: 100%; margin-bottom: 13px; padding: 10px; border: 1px solid #dce2d8; background: white; color: #37473a; font-size: 10px; resize: vertical; }
 .subtotal { display: flex; justify-content: space-between; margin-top: 20px; padding: 14px 0; border-top: 1px solid #e5e8df; color: #657065; font-size: 11px; }
 .subtotal b { color: #304a35; font-size: 15px; }
 .checkout-note { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 15px; color: #828b80; font-size: 9px; line-height: 1.6; }
 .checkout-note svg { flex: 0 0 auto; color: #9b7958; }
 .checkout-button { width: 100%; justify-content: center; }
 .commission-note { display: block; margin-top: 10px; color: #95998f; font-size: 9px; text-align: center; }
+.orders-button { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: #38543f; padding: 8px 4px; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.orders-button:hover { color: #9b6042; }
+.delivery-pin-label { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; color: #526553; font-size: 9px; font-weight: 600; }
+.delivery-map-picker { overflow: hidden; border: 1px solid #dce2d8; background: #e7ece4; }
+.delivery-map { width: 100%; height: 245px; background: #e7ece4; }
+.map-loading { min-height: 245px; display: grid; place-items: center; color: #788477; font-size: 10px; }
+.delivery-map .leaflet-control-attribution { font-size: 8px; }
+.delivery-map-hint { margin: 7px 0 14px; color: #818a7e; font-size: 9px; line-height: 1.5; }
+.delivery-map-marker { border: 0; background: transparent; }
+.delivery-map-marker span { display: block; width: 18px; height: 18px; border: 3px solid white; border-radius: 50% 50% 50% 0; box-shadow: 0 2px 6px rgba(0,0,0,.32); transform: rotate(-45deg); }
+.destination-map-marker span { background: #a64e37; }
+.courier-map-marker span { background: #2f7046; }
+.cod-payment-choice { display: flex; align-items: center; gap: 10px; margin: 13px 0 4px; padding: 12px; border: 1px solid #dce4d8; background: #f0f3eb; color: #405645; }
+.cod-payment-choice > span:nth-child(2) { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.cod-payment-choice b { font-size: 10px; }
+.cod-payment-choice small { color: #7e887b; font-size: 8px; }
+.cod-payment-choice > svg { color: #62805c; }
+.cod-payment-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: #e1e9db; }
+.orders-panel { width: min(520px, 100%); }
+.customer-order-list { display: flex; flex-direction: column; gap: 11px; margin-top: 22px; }
+.customer-order-card { padding: 14px; border: 1px solid #e2e6dd; background: white; }
+.customer-order-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.customer-order-heading > b { color: #344638; font: 600 14px "Playfair Display", Georgia, serif; }
+.customer-order-card > p { margin: 10px 0 5px; color: #657164; font-size: 10px; line-height: 1.5; }
+.customer-order-card > small { color: #898f84; font-size: 8px; }
+.order-status-pill { display: inline-flex; padding: 5px 7px; border-radius: 12px; background: #edf2e8; color: #456346; font-size: 8px; font-weight: 600; white-space: nowrap; }
+.status-out_for_delivery { background: #fff0e5; color: #9c573a; }
+.status-delivered { background: #e4f2e7; color: #3e7245; }
+.status-cancelled { background: #f7e8e5; color: #934a40; }
+.customer-order-actions { display: flex; justify-content: space-between; gap: 9px; margin-top: 12px; }
+.customer-order-actions .text-button { padding: 0; font-size: 9px; }
+.courier-link-field { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; color: #788276; font-size: 8px; }
+.courier-link-field input { width: 100%; height: 32px; border: 1px solid #dce2d8; padding: 0 8px; color: #415644; font-size: 8px; }
+.delivery-confirmation { width: min(580px, 100%); max-height: 94vh; overflow-y: auto; padding: 27px 30px 25px; background: #fbfaf6; box-shadow: 0 15px 45px rgba(0,0,0,.2); }
+.delivery-confirmation .delivery-map { height: 270px; }
+.delivery-address { margin: 11px 0 5px; color: #697468; font-size: 10px; line-height: 1.6; }
+.confirmation-links { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 15px; }
+.confirmation-links .primary-button, .confirmation-links .outline-button { min-height: 40px; padding: 7px; font-size: 9px; text-align: center; }
+.delivery-page { width: min(920px, 94%); margin: 0 auto; padding: 28px 0 60px; }
+.delivery-back-link { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 15px; color: #476149; font-size: 10px; font-weight: 600; }
+.delivery-page-card { padding: 28px; border: 1px solid #e5e8df; background: #fbfaf6; box-shadow: 0 12px 35px rgba(30,45,34,.07); }
+.delivery-page-heading small { color: #9c684e; font-size: 8px; font-weight: 700; letter-spacing: .14em; }
+.delivery-page-heading h1 { margin: 7px 0 20px; color: #293a2e; font: 600 29px/1.15 "Playfair Display", Georgia, serif; }
+.delivery-order-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; padding: 14px; background: #f0f2eb; }
+.delivery-order-summary > div { display: flex; flex-direction: column; gap: 5px; }
+.delivery-order-summary small { color: #8b9187; font-size: 7px; font-weight: 700; letter-spacing: .1em; }
+.delivery-order-summary b { color: #425645; font-size: 10px; }
+.delivery-progress { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 0 0 20px; padding: 0; list-style: none; }
+.delivery-progress-step { display: flex; align-items: center; flex-direction: column; gap: 6px; position: relative; color: #9ca196; text-align: center; }
+.delivery-progress-step > span { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid #d5dbd1; border-radius: 50%; background: #f6f6f1; font-size: 9px; }
+.delivery-progress-step b { font-size: 8px; font-weight: 500; }
+.delivery-progress-step.complete { color: #385d3c; }
+.delivery-progress-step.complete > span { border-color: #476e4c; background: #e6eee2; }
+.delivery-progress-step.complete b { font-weight: 700; }
+.delivery-map-card { margin-top: 13px; border: 1px solid #e0e5dc; background: white; }
+.delivery-map-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 13px; color: #425845; font-size: 10px; font-weight: 600; }
+.delivery-map-heading > span, .delivery-map-heading > small { display: inline-flex; align-items: center; gap: 6px; }
+.delivery-map-heading > small { color: #69836b; font-size: 8px; font-weight: 500; }
+.delivery-map-card .delivery-map { height: 330px; }
+.delivery-map-card .delivery-address, .delivery-map-card .map-coordinate-copy { display: block; margin: 10px 13px; }
+.map-coordinate-copy { color: #92988d; font-size: 8px; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: #4a9a54; box-shadow: 0 0 0 3px #e4f1e4; }
+.delivery-refresh-note { display: flex; align-items: center; gap: 6px; margin-top: 13px; color: #899186; font-size: 8px; }
+.delivery-loading { color: #758073; font-size: 10px; }
+.delivery-error { padding: 10px 12px; border: 1px solid #efd6cf; background: #fbefec; color: #8c483d; font-size: 10px; line-height: 1.5; }
+.gps-message { padding: 9px 11px; background: #f0f2eb; color: #6a7568; font-size: 9px; line-height: 1.5; }
+.courier-destination { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 18px; color: #4c614e; }
+.courier-destination > span { display: flex; flex-direction: column; gap: 5px; }
+.courier-destination small { color: #9c684e; font-size: 7px; font-weight: 700; letter-spacing: .1em; }
+.courier-destination b { font-size: 11px; line-height: 1.5; }
+.courier-actions { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: 15px; }
+.courier-actions .outline-button { justify-content: center; min-height: 40px; }
+.delivery-success { display: flex; align-items: center; gap: 8px; padding: 12px; background: #e8f1e5; color: #3c6742; font-size: 10px; }
 .modal-overlay { align-items: center; justify-content: center; padding: 18px; overflow-y: auto; }
 .listing-modal { width: min(540px, 100%); max-height: 95vh; overflow-y: auto; padding: 27px 30px 30px; background: #fbfaf6; box-shadow: 0 15px 45px rgba(0,0,0,.2); }
 .modal-intro { margin: 12px 0 18px; color: #81877e; font-size: 10px; }
@@ -283,7 +357,22 @@ h1, h2, h3, p { margin-top: 0; }
   .brand small { font-size: 6px; margin-top: 5px; }
   .desktop-nav { display: none; }
   .header-actions { gap: 5px; }
+  .orders-button { gap: 3px; padding: 7px 2px; font-size: 8px; }
+  .orders-button svg { width: 14px; }
   .notification-button { display: none; }
+  .signin-button { padding: 7px; font-size: 0;     .delivery-page { width: 94%; padding: 17px 0 35px; }
+    .delivery-page-card { padding: 18px 13px; }
+    .delivery-page-heading h1 { font-size: 24px; }
+    .delivery-order-summary { grid-template-columns: 1fr; gap: 11px; }
+    .delivery-progress-step b { max-width: 72px; font-size: 7px; }
+    .delivery-map-card .delivery-map { height: 260px; }
+    .delivery-map { height: 220px; }
+    .delivery-map-heading { align-items: flex-start; flex-direction: column; }
+    .delivery-confirmation { padding: 20px 14px; }
+    .delivery-confirmation .delivery-map { height: 225px; }
+    .confirmation-links { grid-template-columns: 1fr; }
+    .customer-order-heading { align-items: flex-start; flex-direction: column; }
+    .customer-order-actions { align-items: flex-start; flex-direction: column; }
   .signin-button { padding: 7px; font-size: 0; }
   .signin-button svg { width: 18px; height: 18px; }
   .bag-button { gap: 6px; padding: 8px; font-size: 9px; }

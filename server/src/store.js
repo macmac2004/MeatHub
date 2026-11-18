@@ -1,6 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { canAdvanceDeliveryStatus, isPhilippinesLocation } from './delivery.js';
 
 const photo = (id) => `https://images.pexels.com/photos/${id}/pexels-photo-${id}.jpeg?auto=compress&cs=tinysrgb&w=1000`;
 
@@ -158,6 +162,62 @@ const sampleProducts = [
     description: 'A small-batch cut with delicate flavor, ready for the grill.',
     featured: true,
     archived: false
+ },
+  {
+    id: 'beef-stew-cubes',
+    name: 'Fresh beef stew cubes',
+    farm: 'Batangas Cattle Co.',
+    category: 'Beef',
+    price: 345,
+    unit: '500g',
+    stock: 15,
+    image: photo(36319690),
+    location: 'San Jose, Batangas',
+    description: 'Fresh-cut beef portions for nilaga, caldereta, or slow-braised stews.',
+    featured: false,
+    archived: false
+  },
+  {
+    id: 'fresh-pork-chops',
+    name: 'Fresh-cut pork chops',
+    farm: 'Bukid Lokal',
+    category: 'Pork',
+    price: 325,
+    unit: '500g',
+    stock: 13,
+    image: photo(10647859),
+    location: 'Lipa, Batangas',
+    description: 'Thick-cut raw pork chops, ready for marinating, pan-searing, or grilling.',
+    featured: false,
+    archived: false
+  },
+  {
+    id: 'raw-chicken-breast',
+    name: 'Fresh chicken breast fillets',
+    farm: 'Umagang Farm',
+    category: 'Chicken',
+    price: 305,
+    unit: '500g',
+    stock: 18,
+    image: photo(5769376),
+    location: 'Indang, Cavite',
+    description: 'Boneless raw chicken breast fillets, trimmed and packed fresh.',
+    featured: false,
+    archived: false
+  },
+  {
+    id: 'fresh-lamb-chops',
+    name: 'Fresh lamb chops',
+    farm: 'Highland Harvest',
+    category: 'Lamb',
+    price: 675,
+    unit: '400g',
+    stock: 7,
+    image: photo(31732110),
+    location: 'Tagaytay, Cavite',
+    description: 'Raw lamb chops with visible marbling, portioned for the grill or skillet.',
+    featured: false,
+    archived: false
   }
 ];
 
@@ -175,17 +235,44 @@ function commissionFields(total) {
   };
 }
 
-const memory = {
-  products: sampleProducts.map((product) => ({ ...product, ownerUid: 'demo-seller' })),
-  orders: [],
-  subscriptions: []
-};
-
 const isDemo = process.env.DATA_MODE === 'demo' ||
   (!process.env.DATA_MODE && process.env.NODE_ENV !== 'production');
+const demoStorePath = resolve(process.env.MEATHUB_DEMO_STORE_PATH ||
+  fileURLToPath(new URL('../data/demo-store.json', import.meta.url)));
+const initialDemoProducts = sampleProducts.map((product) => ({ ...product, ownerUid: 'demo-seller' }));
+
+function loadDemoStore() {
+  let saved;
+  try {
+    saved = JSON.parse(readFileSync(demoStorePath, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { products: initialDemoProducts, orders: [], subscriptions: [] };
+    }
+    throw new Error(`Could not load the demo store at ${demoStorePath}: ${error.message}`, { cause: error });
+  }
+  if (!saved || !Array.isArray(saved.products) || !Array.isArray(saved.orders)) {
+    throw new Error(`The demo store at ${demoStorePath} has an invalid format.`);
+  }
+  return { products: saved.products, orders: saved.orders, subscriptions: [] };
+}
+
+const memory = isDemo
+  ? loadDemoStore()
+  : { products: initialDemoProducts, orders: [], subscriptions: [] };
+
+function persistDemoStore() {
+  const temporaryPath = `${demoStorePath}.${process.pid}.tmp`;
+  mkdirSync(dirname(demoStorePath), { recursive: true });
+  writeFileSync(temporaryPath, JSON.stringify({
+    products: memory.products,
+    orders: memory.orders
+  }), { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporaryPath, demoStorePath);
+}
 
 if (isDemo) {
-  console.warn('MeatHub is using its in-memory demo store. Data is not persistent.');
+  console.warn(`MeatHub is using its local demo store at ${demoStorePath}.`);
 }
 
 let db;
@@ -213,6 +300,7 @@ export async function createProduct(product, ownerUid) {
   if (isDemo) {
     const saved = { id: randomUUID(), ...data };
     memory.products.unshift(saved);
+    persistDemoStore();
     return saved;
   }
   const document = db.collection('products').doc();
@@ -226,6 +314,7 @@ export async function updateProduct(id, updates, ownerUid) {
     if (!product || product.archived) return null;
     if (product.ownerUid !== ownerUid) throw new Error('You can only edit your own listings.');
     Object.assign(product, updates, { updatedAt: new Date().toISOString() });
+    persistDemoStore();
     return product;
   }
   const document = db.collection('products').doc(id);
@@ -244,6 +333,7 @@ export async function archiveProduct(id, ownerUid) {
     if (!product) return false;
     if (product.ownerUid !== ownerUid) throw new Error('You can only archive your own listings.');
     product.archived = true;
+    persistDemoStore();
     return true;
   }
   const document = db.collection('products').doc(id);
@@ -256,7 +346,65 @@ export async function archiveProduct(id, ownerUid) {
   });
 }
 
-export async function createOrder(items, pickupDate, customerUid) {
+function customerOrder(order) {
+  const { courierToken, ...details } = order;
+  return details;
+}
+
+function trackedOrder(order) {
+  return {
+    id: order.id,
+    items: order.items.map(({ name, quantity }) => ({ name, quantity })),
+    total: order.total,
+    status: order.status,
+    statusHistory: order.statusHistory,
+    deliveryDate: order.deliveryDate,
+    deliveryAddress: order.deliveryAddress,
+    deliveryLocation: order.deliveryLocation,
+    courierLocation: order.courierLocation,
+    trackingUpdatedAt: order.trackingUpdatedAt,
+    paymentMethod: order.paymentMethod,
+    paymentStatus: order.paymentStatus
+  };
+}
+
+function deliveryStatusUpdate(order, status, cashCollected) {
+  if (!canAdvanceDeliveryStatus(order.status, status)) {
+    throw new Error('Invalid delivery status transition.');
+  }
+  if (status === 'delivered' && order.paymentMethod === 'cod' && cashCollected !== true) {
+    throw new Error('Collect the cash payment before marking this COD order delivered.');
+  }
+  const updatedAt = new Date().toISOString();
+  return {
+    status,
+    paymentStatus: status === 'delivered' ? 'paid' : order.paymentStatus,
+    statusHistory: [...(order.statusHistory || []), { status, updatedAt }],
+    trackingUpdatedAt: updatedAt,
+    updatedAt
+  };
+}
+
+export async function createOrder(items, delivery, customerUid) {
+  const now = new Date().toISOString();
+  const trackingToken = randomBytes(32).toString('base64url');
+  const courierToken = randomBytes(32).toString('base64url');
+  const orderFields = {
+    deliveryDate: delivery.deliveryDate,
+    deliveryAddress: delivery.deliveryAddress,
+    deliveryLocation: delivery.deliveryLocation,
+    paymentMethod: 'cod',
+    paymentStatus: 'pending',
+    status: 'confirmed',
+    statusHistory: [{ status: 'confirmed', updatedAt: now }],
+    courierLocation: null,
+    trackingUpdatedAt: now,
+    trackingToken,
+    courierToken,
+    customerUid,
+    createdAt: now,
+    archived: false
+  };
   if (isDemo) {
     const lines = items.map(({ productId, quantity }) => {
       const product = memory.products.find((item) => item.id === productId && !item.archived);
@@ -270,15 +418,12 @@ export async function createOrder(items, pickupDate, customerUid) {
     const order = {
       id: randomUUID(),
       items: lines,
-      pickupDate,
-      customerUid,
       total: lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
-      status: 'reserved',
-      createdAt: new Date().toISOString(),
-      archived: false
+      ...orderFields
     };
     Object.assign(order, commissionFields(order.total));
     memory.orders.unshift(order);
+    persistDemoStore();
     return order;
   }
 
@@ -299,12 +444,8 @@ export async function createOrder(items, pickupDate, customerUid) {
     lines.forEach((line) => transaction.update(line.ref, { stock: line.stock - line.quantity }));
     const order = {
       items: lines.map(({ productId, quantity, name, unitPrice }) => ({ productId, quantity, name, unitPrice })),
-      pickupDate,
-      customerUid,
       total: lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
-      status: 'reserved',
-      createdAt: new Date().toISOString(),
-      archived: false
+      ...orderFields
     };
     Object.assign(order, commissionFields(order.total));
     transaction.set(orderRef, order);
@@ -313,31 +454,123 @@ export async function createOrder(items, pickupDate, customerUid) {
 }
 
 export async function listOrders(customerUid) {
-  if (isDemo) return memory.orders.filter((order) => order.customerUid === customerUid && !order.archived);
+  if (isDemo) {
+    return memory.orders
+      .filter((order) => order.customerUid === customerUid && !order.archived)
+      .map(customerOrder);
+  }
   const snapshot = await db.collection('orders')
     .where('customerUid', '==', customerUid)
     .where('archived', '==', false)
     .get();
-  return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+  return snapshot.docs.map((document) => customerOrder({ id: document.id, ...document.data() }));
+}
+
+export async function createCourierLink(orderId, customerUid) {
+  const courierToken = randomBytes(32).toString('base64url');
+  if (isDemo) {
+    const order = memory.orders.find((item) => item.id === orderId &&
+      item.customerUid === customerUid && !item.archived &&
+      !['delivered', 'cancelled'].includes(item.status));
+    if (!order) return null;
+    order.courierToken = courierToken;
+    persistDemoStore();
+    return { courierToken };
+  }
+  const document = db.collection('orders').doc(orderId);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(document);
+    if (!snapshot.exists || snapshot.data().customerUid !== customerUid ||
+        snapshot.data().archived || ['delivered', 'cancelled'].includes(snapshot.data().status)) return null;
+    transaction.update(document, { courierToken, courierLinkUpdatedAt: new Date().toISOString() });
+    return { courierToken };
+  });
+}
+
+async function findOrderByToken(field, token) {
+  if (isDemo) {
+    const order = memory.orders.find((item) => item[field] === token && !item.archived);
+    return order ? { id: order.id, order } : null;
+  }
+  const snapshot = await db.collection('orders').where(field, '==', token).limit(1).get();
+  if (snapshot.empty) return null;
+  const document = snapshot.docs[0];
+  return { id: document.id, ref: document.ref, order: { id: document.id, ...document.data() } };
+}
+
+export async function getTrackedOrder(trackingToken) {
+  const found = await findOrderByToken('trackingToken', trackingToken);
+  return found ? trackedOrder(found.order) : null;
+}
+
+export async function getCourierOrder(courierToken) {
+  const found = await findOrderByToken('courierToken', courierToken);
+  return found ? trackedOrder(found.order) : null;
+}
+
+export async function updateCourierLocation(courierToken, location) {
+  if (!isPhilippinesLocation(location)) throw new Error('Courier location must be within the Philippines map area.');
+  const found = await findOrderByToken('courierToken', courierToken);
+  if (!found) return null;
+  const updatedAt = new Date().toISOString();
+  const courierLocation = { ...location, updatedAt };
+  if (isDemo) {
+    if (found.order.status !== 'out_for_delivery') {
+      throw new Error('Live location sharing is only available while the order is out for delivery.');
+    }
+    found.order.courierLocation = courierLocation;
+    found.order.trackingUpdatedAt = updatedAt;
+    persistDemoStore();
+    return trackedOrder(found.order);
+  }
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(found.ref);
+    if (!snapshot.exists || snapshot.data().courierToken !== courierToken || snapshot.data().archived) return null;
+    if (snapshot.data().status !== 'out_for_delivery') {
+      throw new Error('Live location sharing is only available while the order is out for delivery.');
+    }
+    const updates = { courierLocation, trackingUpdatedAt: updatedAt };
+    transaction.update(found.ref, updates);
+    return trackedOrder({ id: found.id, ...snapshot.data(), ...updates });
+  });
+}
+
+export async function updateCourierStatus(courierToken, status, cashCollected) {
+  const found = await findOrderByToken('courierToken', courierToken);
+  if (!found) return null;
+  if (isDemo) {
+    Object.assign(found.order, deliveryStatusUpdate(found.order, status, cashCollected));
+    persistDemoStore();
+    return trackedOrder(found.order);
+  }
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(found.ref);
+    if (!snapshot.exists || snapshot.data().courierToken !== courierToken || snapshot.data().archived) return null;
+    const updates = deliveryStatusUpdate(snapshot.data(), status, cashCollected);
+    transaction.update(found.ref, updates);
+    return trackedOrder({ id: found.id, ...snapshot.data(), ...updates });
+  });
 }
 
 export async function archiveOrder(id, customerUid) {
   if (isDemo) {
     const order = memory.orders.find((item) => item.id === id && item.customerUid === customerUid);
-    if (!order || order.archived || order.status !== 'reserved') return false;
+    if (!order || order.archived || !['reserved', 'confirmed', 'preparing'].includes(order.status)) return false;
     order.items.forEach((line) => {
       const product = memory.products.find((item) => item.id === line.productId);
       if (product) product.stock += line.quantity;
     });
     order.archived = true;
     order.status = 'cancelled';
+    order.paymentStatus = 'cancelled';
+    persistDemoStore();
     return true;
   }
   const document = db.collection('orders').doc(id);
   return db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(document);
     if (!snapshot.exists || snapshot.data().customerUid !== customerUid ||
-        snapshot.data().archived || snapshot.data().status !== 'reserved') return false;
+        snapshot.data().archived || !['reserved', 'confirmed', 'preparing'].includes(snapshot.data().status)) return false;
     const items = snapshot.data().items || [];
     const productSnapshots = await Promise.all(items.map((item) =>
       transaction.get(db.collection('products').doc(item.productId))
@@ -348,6 +581,7 @@ export async function archiveOrder(id, customerUid) {
     transaction.update(document, {
       archived: true,
       status: 'cancelled',
+      paymentStatus: 'cancelled',
       archivedAt: new Date().toISOString()
     });
     return true;
