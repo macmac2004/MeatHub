@@ -14,9 +14,15 @@ The default `DATA_MODE=demo` runs with sample products and a local JSON store at
 
 ## Firebase
 
-Set `DATA_MODE=firebase` and `FIREBASE_PROJECT_ID` in `.env`, then configure Firebase Admin Application Default Credentials. Do not commit service-account credentials. Create a Firestore database and enable Google sign-in in Firebase Authentication. Set the client-side Firebase values in `client/.env.local` using the `VITE_FIREBASE_*` names from `client/.env.example`.
+1. In the [Firebase Console](https://console.firebase.google.com/), create a project and add a **Web app**. Copy its web-app config into `client/.env.local` using the `VITE_FIREBASE_*` names from `client/.env.example`. `VITE_API_URL` should be `http://localhost:4000` for local development.
+2. In **Authentication → Sign-in method**, enable **Google** and add `localhost` under **Authentication → Settings → Authorized domains** if it is not already listed.
+3. In **Firestore Database**, create a database. The API uses the `products`, `orders`, and `pushSubscriptions` collections. Deploy the included indexes and deny-by-default client rules using the Firebase CLI: `npx firebase-tools login`, `npx firebase-tools use --add`, then `npx firebase-tools deploy --only firestore:rules,firestore:indexes`.
+4. Copy `.env.example` to `.env`, set `DATA_MODE=firebase`, `FIREBASE_PROJECT_ID`, and `CLIENT_ORIGIN=http://localhost:5173`. For local Admin SDK access, configure Application Default Credentials (`gcloud auth application-default login`) or set `GOOGLE_APPLICATION_CREDENTIALS` to a service-account JSON path **outside this repository**.
+5. Restart `npm run dev`, reload the website, sign in with Google, then create a test listing. The Firebase catalog starts empty; demo products are only used in demo mode.
 
-In Firebase mode, API write requests require a Firebase ID token. Product and order data are stored in Firestore. Users can create listings and delivery orders after signing in.
+The backend verifies Firebase ID tokens and uses the Admin SDK, which bypasses Firestore Security Rules. The web client does not access Firestore directly, so the included rules deny all client SDK access. Never put Admin credentials in `client/.env.local`, commit a service-account key, or share that key. The web-app API key/config is intended for client identification; secure data access is enforced by backend authentication and Firestore rules.
+
+In Firebase mode, API write requests require a Firebase ID token. Product and order data are stored in Firestore. Users can create listings and delivery orders after signing in. The included composite index supports listing a customer's non-archived orders.
 
 For production builds, set `VITE_API_URL` in the client environment to the API's base URL (or serve the API behind the same-origin `/api` and `/ws` reverse-proxy routes). Configure `CLIENT_ORIGIN` on the API to match the browser origin.
 

@@ -4,5 +4,7 @@ dist/
 .env.*
 !.env.example
 service-account*.json
+*service-account*.json
+*-firebase-adminsdk-*.json
 npm-debug.log*
 server/data/
