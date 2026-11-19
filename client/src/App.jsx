@@ -1491,17 +1491,17 @@ function MarketApp() {
             <div className="panel-heading"><div><small>GROW WITH MEATHUB</small><h2>{editingProduct ? 'Update your listing.' : 'List something good.'}</h2></div><button className="icon-button" onClick={closeListingForm} aria-label="Close listing form"><X /></button></div>
             <p className="modal-intro">Tell local shoppers about the cuts you have ready.</p>
             <form className="listing-form" onSubmit={submitListing}>
-              <label>Product name<input required value={listingForm.name} onChange={(e) => setListingForm({ ...listingForm, name: e.target.value })} placeholder="e.g. Grass-fed beef sirloin" /></label>
+              <label>Product name<input required maxLength="500" value={listingForm.name} onChange={(e) => setListingForm({ ...listingForm, name: e.target.value })} placeholder="e.g. Grass-fed beef sirloin" /></label>
               <div className="form-pair">
-                <label>Farm / producer<input required value={listingForm.farm} onChange={(e) => setListingForm({ ...listingForm, farm: e.target.value })} placeholder="Your farm name" /></label>
+                <label>Farm / producer<input required maxLength="500" value={listingForm.farm} onChange={(e) => setListingForm({ ...listingForm, farm: e.target.value })} placeholder="Your farm name" /></label>
                 <label>Meat type<select value={listingForm.category} onChange={(e) => setListingForm({ ...listingForm, category: e.target.value })}>{categories.slice(1).map((category) => <option key={category}>{category}</option>)}</select></label>
               </div>
               <div className="form-triple">
-                <label>Price (₱)<input type="number" min="1" step="1" required value={listingForm.price} onChange={(e) => setListingForm({ ...listingForm, price: e.target.value })} /></label>
-                <label>Pack size<input required value={listingForm.unit} onChange={(e) => setListingForm({ ...listingForm, unit: e.target.value })} /></label>
+                <label>Price (₱)<input type="number" min="0.01" step="0.01" required value={listingForm.price} onChange={(e) => setListingForm({ ...listingForm, price: e.target.value })} /></label>
+                <label>Pack size<input required maxLength="40" value={listingForm.unit} onChange={(e) => setListingForm({ ...listingForm, unit: e.target.value })} /></label>
                 <label>Stock<input type="number" min="1" step="1" required value={listingForm.stock} onChange={(e) => setListingForm({ ...listingForm, stock: e.target.value })} /></label>
               </div>
-              <label>Pickup location<input required value={listingForm.location} onChange={(e) => setListingForm({ ...listingForm, location: e.target.value })} placeholder="Town or city" /></label>
+              <label>Pickup location<input required maxLength="500" value={listingForm.location} onChange={(e) => setListingForm({ ...listingForm, location: e.target.value })} placeholder="Town or city" /></label>
               <label>Product photo <span className="optional">(optional · JPEG, PNG, or WebP · up to 5 MB)</span>
                 <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
                   const file = event.target.files?.[0];
@@ -1522,7 +1522,7 @@ function MarketApp() {
                   alt="Preview of the product"
                 />
               )}
-              <label>About this cut<textarea required rows="3" value={listingForm.description} onChange={(e) => setListingForm({ ...listingForm, description: e.target.value })} placeholder="How was it raised? What makes it special?" /></label>
+              <label>About this cut<textarea required maxLength="500" rows="3" value={listingForm.description} onChange={(e) => setListingForm({ ...listingForm, description: e.target.value })} placeholder="How was it raised? What makes it special?" /></label>
               <button type="submit" className="primary-button checkout-button">{editingProduct ? 'Save listing changes' : 'Publish listing'} <ArrowRight size={16} /></button>
             </form>
           </section>
