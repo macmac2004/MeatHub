@@ -428,8 +428,8 @@ app.post('/api/orders', authenticate, requireRole('buyer'), async (req, res, nex
       customerName: contactName,
       customerPhone: contactPhone
     }, req.user.uid);
-    sendPushToSubscribers({ title: 'MeatHub COD delivery', body: 'A new cash-on-delivery order was placed.' })
-      .catch((error) => console.error('Could not send delivery notifications:', error));
+    notifySellersOfNewOrder(order)
+      .catch((error) => console.error('Could not send seller notifications:', error));
     const { sellerEarnings: _sellerEarnings, sellerUids: _sellerUids, sellerConfirmations: _sellerConfirmations, ...customerOrder } = order;
     customerOrder.items = customerOrder.items.map(({ sellerUid: _sellerUid, ...item }) => item);
     res.status(201).json(customerOrder);
@@ -567,6 +567,17 @@ async function notifyBuyerOfDeliveryUpdate(courierToken, kind, status) {
         tag: `order-${context.orderId}`
       };
   await sendPushToSubscribers(payload, context.customerUid);
+}
+
+async function notifySellersOfNewOrder(order) {
+  if (!hasPushKeys || !order.sellerUids?.length) return;
+  const payload = {
+    title: 'New COD order to confirm',
+    body: 'A new cash-on-delivery order needs your confirmation.',
+    url: '/',
+    tag: `seller-order-${order.id}`
+  };
+  await Promise.all(order.sellerUids.map((sellerUid) => sendPushToSubscribers(payload, sellerUid)));
 }
 
 async function notifyBuyerOfSellerDecision(orderId, decision) {

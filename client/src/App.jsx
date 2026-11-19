@@ -342,7 +342,7 @@ function MarketApp() {
   }, [accountRole, accountRoleError, accountRoleReady, authReady, loadProducts, user]);
 
   useEffect(() => {
-    if (accountRole !== 'buyer' || !('Notification' in window) || Notification.permission !== 'granted') return undefined;
+    if (!['buyer', 'seller'].includes(accountRole) || !('Notification' in window) || Notification.permission !== 'granted') return undefined;
     setPushEnabled(true);
     if (!apiPushReady || !VAPID_PUBLIC_KEY || !('serviceWorker' in navigator)) return undefined;
     if (firebaseEnabled && !user) return undefined;
@@ -915,11 +915,13 @@ function MarketApp() {
           )}
         </nav>
         <div className="header-actions">
+          {['buyer', 'seller'].includes(accountRole) && (
+            <button className="icon-button notification-button" aria-label={pushEnabled ? 'Notifications enabled' : 'Enable notifications'} onClick={enableNotifications}>
+              <Bell size={19} />
+            </button>
+          )}
           {accountRole === 'buyer' && (
             <>
-              <button className="icon-button notification-button" aria-label={pushEnabled ? 'Notifications enabled' : 'Enable notifications'} onClick={enableNotifications}>
-                <Bell size={19} />
-              </button>
               <button className="orders-button" onClick={openOrders}>
                 <MapPin size={16} /><span>My deliveries</span>
               </button>
