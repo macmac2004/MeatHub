@@ -514,7 +514,6 @@ h1, h2, h3, p { margin-top: 0; }
   .header-actions { gap: 5px; }
   .orders-button { gap: 3px; padding: 7px 2px; font-size: 8px; }
   .orders-button svg { width: 14px; }
-  .notification-button { display: none; }
   .signin-button { padding: 7px; font-size: 0; }
   .signin-button svg { width: 18px; height: 18px; }
   .signup-button { min-height: 31px; padding: 0 8px; font-size: 8px; }

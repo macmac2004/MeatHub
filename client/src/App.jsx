@@ -163,11 +163,13 @@ function MarketApp() {
   const [pushEnabled, setPushEnabled] = useState(false);
   const [apiPushReady, setApiPushReady] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [pushError, setPushError] = useState('');
   const [pushPermission, setPushPermission] = useState(() => ('Notification' in window ? Notification.permission : 'unsupported'));
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushServerKey, setPushServerKey] = useState('');
   const pushApplicationKey = pushServerKey || VAPID_PUBLIC_KEY;
+  const pushSubscriptionSupported = 'PushManager' in window && 'serviceWorker' in navigator;
   const [deliveryDate, setDeliveryDate] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [deliveryLocation, setDeliveryLocation] = useState(null);
@@ -972,6 +974,7 @@ function MarketApp() {
   }, [notificationsOpen]);
 
   async function enableNotifications() {
+    setPushError('');
     if (!('Notification' in window)) {
       announce('This browser does not support notifications.');
       return;
@@ -1004,7 +1007,11 @@ function MarketApp() {
       setPushSubscribed(true);
       announce('Push notifications are enabled.');
     } catch (error) {
-      announce(`Could not enable push notifications: ${error.message}`);
+      const message = /push service error/i.test(error.message)
+        ? 'This browser could not connect to its push service. If you opened MeatHub inside Messenger, tap ⋯ and choose Open in browser, then enable notifications again.'
+        : `Could not enable push notifications: ${error.message}`;
+      setPushError(message);
+      announce(message);
     }
   }
 
@@ -1710,8 +1717,13 @@ function MarketApp() {
                 <b className={apiPushReady ? 'push-on' : 'push-off'}>{apiPushReady ? 'Ready' : 'Not configured'}</b>
               </div>
             </div>
+            <p className="push-hint">If you opened MeatHub inside Messenger, tap ⋯ and choose Open in browser before enabling push notifications.</p>
+            {pushError && <p className="delivery-error" role="status">{pushError}</p>}
             {pushPermission === 'denied' && (
               <p className="delivery-error" role="status">Your browser is blocking notifications for MeatHub. Allow them in the site settings (the lock icon in the address bar), then reload this page.</p>
+            )}
+            {!pushSubscriptionSupported && (
+              <p className="delivery-error" role="status">This browser does not support background push. Open MeatHub in Chrome on Android, or install it from Safari on iPhone.</p>
             )}
             {pushPermission !== 'unsupported' && !apiPushReady && (
               <p className="push-hint">This device can still show alerts while MeatHub is open, but updates while the app is closed need push keys on the server.</p>
@@ -1722,7 +1734,7 @@ function MarketApp() {
                   <Bell size={16} /> Turn off on this device
                 </button>
               ) : (
-                <button className="primary-button" type="button" onClick={enableNotifications} disabled={pushBusy || pushPermission === 'unsupported'}>
+                <button className="primary-button" type="button" onClick={enableNotifications} disabled={pushBusy || pushPermission === 'unsupported' || !pushSubscriptionSupported}>
                   <Bell size={16} /> Enable notifications
                 </button>
               )}
