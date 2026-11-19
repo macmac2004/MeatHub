@@ -381,7 +381,9 @@ function MarketApp() {
         await request('/api/push/subscribe', {
           method: 'POST', body: JSON.stringify(subscription)
         }, user);
+        if (!cancelled) setPushSubscribed(true);
       } catch (error) {
+        if (!cancelled) setPushSubscribed(false);
         console.warn('Could not refresh the push subscription:', error);
       }
     })();
@@ -872,7 +874,7 @@ function MarketApp() {
       setDeliveryLocation(null);
       setOrderConfirmation(saved);
       await loadProducts();
-      if (pushEnabled && 'Notification' in window) {
+      if (pushEnabled && (!apiPushReady || !pushSubscribed) && 'Notification' in window) {
         new Notification('COD delivery placed', { body: 'Waiting for the seller to confirm your order.' });
       }
     } catch (error) {

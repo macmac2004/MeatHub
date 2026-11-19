@@ -439,6 +439,8 @@ app.post('/api/orders', authenticate, requireRole('buyer'), async (req, res, nex
     }, req.user.uid);
     notifySellersOfNewOrder(order)
       .catch((error) => console.error('Could not send seller notifications:', error));
+    notifyBuyerOfNewOrder(order)
+      .catch((error) => console.error('Could not send buyer order notification:', error));
     const { sellerEarnings: _sellerEarnings, sellerUids: _sellerUids, sellerConfirmations: _sellerConfirmations, ...customerOrder } = order;
     customerOrder.items = customerOrder.items.map(({ sellerUid: _sellerUid, ...item }) => item);
     res.status(201).json(customerOrder);
@@ -652,6 +654,17 @@ async function notifySellersOfNewOrder(order) {
     tag: `seller-order-${order.id}`
   };
   await Promise.all(order.sellerUids.map((sellerUid) => sendPushToSubscribers(payload, sellerUid)));
+}
+
+async function notifyBuyerOfNewOrder(order) {
+  if (!hasPushKeys || !order.customerUid || !order.trackingToken) return;
+  const payload = {
+    title: 'Your order was placed',
+    body: `Order #${order.id.slice(0, 8)} is waiting for the seller to confirm.`,
+    url: `/track/${order.trackingToken}`,
+    tag: `order-${order.id}`
+  };
+  await sendPushToSubscribers(payload, order.customerUid);
 }
 
 async function notifyBuyerOfSellerDecision(orderId, decision) {
