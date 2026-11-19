@@ -18,9 +18,12 @@ import {
   getAccountRole,
   getCourierOrder,
   getTrackedOrder,
+  listAdminPayouts,
   listOrders,
   listProducts,
+  listSellerEarnings,
   listSubscriptions,
+  recordSellerPayout,
   registerAccountRole,
   saveSubscription,
   updateCourierLocation,
@@ -37,6 +40,10 @@ const port = Number(process.env.PORT || 4000);
 const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const clientDistPath = fileURLToPath(new URL('../../client/dist', import.meta.url));
 const hasPushKeys = Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+const adminUids = new Set((process.env.MEATHUB_ADMIN_UIDS || '')
+  .split(',')
+  .map((uid) => uid.trim())
+  .filter(Boolean));
 
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -130,6 +137,13 @@ function requireRole(role) {
   };
 }
 
+function requireAdmin(req, res, next) {
+  if (!adminUids.has(req.user.uid)) {
+    return res.status(403).json({ error: 'Administrator access is not enabled for this account.' });
+  }
+  return next();
+}
+
 function validateProduct(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return 'Please provide valid listing details.';
   const required = ['name', 'farm', 'category', 'location', 'description', 'unit'];
@@ -171,7 +185,7 @@ app.get('/api/health', (_req, res) => {
 app.get('/api/profile', authenticate, async (req, res, next) => {
   try {
     const role = demoMode ? req.user.role : await getAccountRole(req.user.uid);
-    res.json({ role });
+    res.json({ role, isAdmin: adminUids.has(req.user.uid) });
   } catch (error) {
     next(error);
   }
@@ -286,6 +300,45 @@ app.get('/api/orders', authenticate, requireRole('buyer'), async (req, res, next
   }
 });
 
+app.get('/api/seller/earnings', authenticate, requireRole('seller'), async (req, res, next) => {
+  try {
+    res.json(await listSellerEarnings(req.user.uid));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/admin/payouts', authenticate, requireAdmin, async (_req, res, next) => {
+  try {
+    res.json(await listAdminPayouts());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/admin/payouts/:orderId', authenticate, requireAdmin, async (req, res, next) => {
+  const { sellerUid, reference } = req.body || {};
+  if (typeof sellerUid !== 'string' || !sellerUid.trim() ||
+      typeof reference !== 'string' || !reference.trim() || reference.trim().length > 120) {
+    return res.status(400).json({ error: 'Provide a seller account and payout reference (120 characters or fewer).' });
+  }
+  try {
+    const payout = await recordSellerPayout(
+      req.params.orderId,
+      sellerUid.trim(),
+      reference.trim(),
+      req.user.uid
+    );
+    if (!payout) return res.status(404).json({ error: 'Eligible seller payout was not found.' });
+    res.json(payout);
+  } catch (error) {
+    if (error.message.startsWith('Seller payout')) {
+      return res.status(409).json({ error: error.message });
+    }
+    next(error);
+  }
+});
+
 app.post('/api/orders', authenticate, requireRole('buyer'), async (req, res, next) => {
   const { items, deliveryDate, deliveryAddress, deliveryLocation, paymentMethod } = req.body || {};
   if (!Array.isArray(items) || items.length === 0 ||
@@ -313,9 +366,12 @@ app.post('/api/orders', authenticate, requireRole('buyer'), async (req, res, nex
     }, req.user.uid);
     sendPushToSubscribers({ title: 'MeatHub COD delivery', body: 'A new cash-on-delivery order was placed.' })
       .catch((error) => console.error('Could not send delivery notifications:', error));
-    res.status(201).json(order);
+    const { sellerEarnings: _sellerEarnings, sellerUids: _sellerUids, ...customerOrder } = order;
+    customerOrder.items = customerOrder.items.map(({ sellerUid: _sellerUid, ...item }) => item);
+    res.status(201).json(customerOrder);
   } catch (error) {
-    if (error.message.includes('not available') || error.message.includes('enough stock')) {
+    if (error.message.includes('not available') || error.message.includes('enough stock') ||
+        error.message.includes('not linked to a seller')) {
       return res.status(409).json({ error: error.message });
     }
     next(error);

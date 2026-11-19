@@ -236,6 +236,27 @@ function commissionFields(total) {
   };
 }
 
+function sellerEarningsFields(lines) {
+  const totals = new Map();
+  for (const line of lines) {
+    if (typeof line.sellerUid !== 'string' || !line.sellerUid) {
+      throw new Error(`Product ${line.productId} is not linked to a seller.`);
+    }
+    const total = totals.get(line.sellerUid) || 0;
+    totals.set(line.sellerUid, total + line.unitPrice * line.quantity);
+  }
+  const sellerEarnings = [...totals].map(([sellerUid, grossAmount]) => ({
+    sellerUid,
+    grossAmount: Math.round(grossAmount * 100) / 100,
+    ...commissionFields(grossAmount),
+    payoutStatus: 'unpaid'
+  })).map(({ commissionRate: _commissionRate, ...earnings }) => earnings);
+  return {
+    sellerUids: sellerEarnings.map(({ sellerUid }) => sellerUid),
+    sellerEarnings
+  };
+}
+
 const isDemo = process.env.DATA_MODE === 'demo' ||
   (!process.env.DATA_MODE && process.env.NODE_ENV !== 'production');
 const demoStorePath = resolve(process.env.MEATHUB_DEMO_STORE_PATH ||
@@ -406,8 +427,48 @@ export async function archiveProduct(id, ownerUid) {
 }
 
 function customerOrder(order) {
-  const { courierToken, ...details } = order;
-  return details;
+  const { courierToken, sellerEarnings: _sellerEarnings, sellerUids: _sellerUids, ...details } = order;
+  return {
+    ...details,
+    items: details.items.map(({ sellerUid: _sellerUid, ...item }) => item)
+  };
+}
+
+function sellerOrder(order, sellerUid) {
+  const earnings = order.sellerEarnings?.find((item) => item.sellerUid === sellerUid);
+  if (!earnings) return null;
+  return {
+    id: order.id,
+    createdAt: order.createdAt,
+    status: order.status,
+    paymentStatus: order.paymentStatus,
+    items: order.items
+      .filter((item) => item.sellerUid === sellerUid)
+      .map(({ name, quantity, unitPrice }) => ({ name, quantity, unitPrice })),
+    grossAmount: earnings.grossAmount,
+    commissionAmount: earnings.commissionAmount,
+    sellerNet: earnings.sellerNet,
+    payoutStatus: earnings.payoutStatus || 'unpaid',
+    payoutAt: earnings.payoutAt || null,
+    payoutReference: earnings.payoutReference || null
+  };
+}
+
+function adminPayouts(order) {
+  return (order.sellerEarnings || []).map((earnings) => ({
+    orderId: order.id,
+    createdAt: order.createdAt,
+    sellerUid: earnings.sellerUid,
+    items: order.items
+      .filter((item) => item.sellerUid === earnings.sellerUid)
+      .map(({ name, quantity }) => ({ name, quantity })),
+    grossAmount: earnings.grossAmount,
+    commissionAmount: earnings.commissionAmount,
+    sellerNet: earnings.sellerNet,
+    payoutStatus: earnings.payoutStatus || 'unpaid',
+    payoutAt: earnings.payoutAt || null,
+    payoutReference: earnings.payoutReference || null
+  }));
 }
 
 function trackedOrder(order) {
@@ -469,7 +530,7 @@ export async function createOrder(items, delivery, customerUid) {
       const product = memory.products.find((item) => item.id === productId && !item.archived);
       if (!product) throw new Error(`Product ${productId} is no longer available.`);
       if (product.stock < quantity) throw new Error(`${product.name} does not have enough stock.`);
-      return { productId, quantity, name: product.name, unitPrice: product.price };
+      return { productId, sellerUid: product.ownerUid, quantity, name: product.name, unitPrice: product.price };
     });
     lines.forEach((line) => {
       memory.products.find((product) => product.id === line.productId).stock -= line.quantity;
@@ -478,6 +539,7 @@ export async function createOrder(items, delivery, customerUid) {
       id: randomUUID(),
       items: lines,
       total: lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
+      ...sellerEarningsFields(lines),
       ...orderFields
     };
     Object.assign(order, commissionFields(order.total));
@@ -498,12 +560,23 @@ export async function createOrder(items, delivery, customerUid) {
       }
       const product = snapshot.data();
       if (product.stock < quantity) throw new Error(`${product.name} does not have enough stock.`);
-      return { productId, quantity, name: product.name, unitPrice: product.price, ref: snapshot.ref, stock: product.stock };
+      return {
+        productId,
+        sellerUid: product.ownerUid,
+        quantity,
+        name: product.name,
+        unitPrice: product.price,
+        ref: snapshot.ref,
+        stock: product.stock
+      };
     });
     lines.forEach((line) => transaction.update(line.ref, { stock: line.stock - line.quantity }));
     const order = {
-      items: lines.map(({ productId, quantity, name, unitPrice }) => ({ productId, quantity, name, unitPrice })),
+      items: lines.map(({ productId, sellerUid, quantity, name, unitPrice }) => ({
+        productId, sellerUid, quantity, name, unitPrice
+      })),
       total: lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
+      ...sellerEarningsFields(lines),
       ...orderFields
     };
     Object.assign(order, commissionFields(order.total));
@@ -523,6 +596,83 @@ export async function listOrders(customerUid) {
     .where('archived', '==', false)
     .get();
   return snapshot.docs.map((document) => customerOrder({ id: document.id, ...document.data() }));
+}
+
+export async function listSellerEarnings(sellerUid) {
+  let orders;
+  if (isDemo) {
+    orders = memory.orders.filter((order) => !order.archived && order.sellerUids?.includes(sellerUid));
+  } else {
+    const snapshot = await db.collection('orders')
+      .where('sellerUids', 'array-contains', sellerUid)
+      .where('archived', '==', false)
+      .get();
+    orders = snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+  }
+  return orders.map((order) => sellerOrder(order, sellerUid)).filter(Boolean);
+}
+
+export async function listAdminPayouts() {
+  let orders;
+  if (isDemo) {
+    orders = memory.orders.filter((order) =>
+      !order.archived && order.status === 'delivered' && order.paymentStatus === 'paid');
+  } else {
+    const snapshot = await db.collection('orders')
+      .where('paymentStatus', '==', 'paid')
+      .where('archived', '==', false)
+      .get();
+    orders = snapshot.docs
+      .map((document) => ({ id: document.id, ...document.data() }))
+      .filter((order) => order.status === 'delivered');
+  }
+  return orders.flatMap(adminPayouts);
+}
+
+export async function recordSellerPayout(orderId, sellerUid, reference, adminUid) {
+  const payoutAt = new Date().toISOString();
+  const payoutReference = reference.trim();
+  if (isDemo) {
+    const order = memory.orders.find((item) => item.id === orderId && !item.archived);
+    if (!order) return null;
+    if (order.status !== 'delivered' || order.paymentStatus !== 'paid') {
+      throw new Error('Seller payout can only be recorded after COD payment is collected.');
+    }
+    const earnings = order.sellerEarnings?.find((item) => item.sellerUid === sellerUid);
+    if (!earnings) return null;
+    if (earnings.payoutStatus === 'paid') {
+      throw new Error('Seller payout has already been recorded.');
+    }
+    Object.assign(earnings, {
+      payoutStatus: 'paid',
+      payoutAt,
+      payoutReference,
+      paidBy: adminUid
+    });
+    persistDemoStore();
+    return adminPayouts(order).find((item) => item.sellerUid === sellerUid);
+  }
+
+  const document = db.collection('orders').doc(orderId);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(document);
+    if (!snapshot.exists || snapshot.data().archived) return null;
+    const order = { id: document.id, ...snapshot.data() };
+    if (order.status !== 'delivered' || order.paymentStatus !== 'paid') {
+      throw new Error('Seller payout can only be recorded after COD payment is collected.');
+    }
+    const earnings = order.sellerEarnings?.find((item) => item.sellerUid === sellerUid);
+    if (!earnings) return null;
+    if (earnings.payoutStatus === 'paid') {
+      throw new Error('Seller payout has already been recorded.');
+    }
+    const updatedEarnings = order.sellerEarnings.map((item) => item.sellerUid === sellerUid
+      ? { ...item, payoutStatus: 'paid', payoutAt, payoutReference, paidBy: adminUid }
+      : item);
+    transaction.update(document, { sellerEarnings: updatedEarnings });
+    return adminPayouts({ ...order, sellerEarnings: updatedEarnings })
+      .find((item) => item.sellerUid === sellerUid);
+  });
 }
 
 export async function createCourierLink(orderId, customerUid) {

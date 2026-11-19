@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Check, Clock3, LocateFixed, MapPin, PackageCheck, Truck } from 'lucide-react';
+import { API_URL } from './apiUrl.js';
 
-const API_URL = import.meta.env.VITE_API_URL || '';
 const DeliveryMap = lazy(() => import('./DeliveryMap.jsx'));
 const statusSteps = [
   { id: 'confirmed', label: 'Order confirmed' },

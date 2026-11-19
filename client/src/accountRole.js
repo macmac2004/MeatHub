@@ -1,4 +1,5 @@
-const API_URL = import.meta.env.VITE_API_URL || '';
+import { API_URL } from './apiUrl.js';
+
 const PENDING_ROLE_KEY = 'meathub-pending-role';
 
 export async function saveAccountRole(user, role) {

@@ -56,6 +56,7 @@ before(async () => {
       DATA_MODE: 'demo',
       NODE_ENV: 'test',
       PORT: String(port),
+      MEATHUB_ADMIN_UIDS: 'admin-1',
       MEATHUB_DEMO_STORE_PATH: demoStorePath
     },
     stdio: 'ignore'
@@ -78,7 +79,12 @@ test('seller and buyer accounts are limited to their respective API actions', as
   const buyerProfile = await fetch(`${apiUrl}/api/profile`, {
     headers: demoHeaders('buyer-1', 'buyer')
   });
-  assert.deepEqual(await buyerProfile.json(), { role: 'buyer' });
+  assert.deepEqual(await buyerProfile.json(), { role: 'buyer', isAdmin: false });
+
+  const adminProfile = await fetch(`${apiUrl}/api/profile`, {
+    headers: demoHeaders('admin-1', 'buyer')
+  });
+  assert.deepEqual(await adminProfile.json(), { role: 'buyer', isAdmin: true });
 
   const buyerListings = await fetch(`${apiUrl}/api/products/mine`, {
     headers: demoHeaders('buyer-1', 'buyer')
@@ -92,7 +98,7 @@ test('seller and buyer accounts are limited to their respective API actions', as
   });
   assert.equal(blockedListing.status, 403);
 
-  const product = await fetch(`${apiUrl}/api/products`, {
+  const productResponse = await fetch(`${apiUrl}/api/products`, {
     method: 'POST',
     headers: demoHeaders('seller-1', 'seller'),
     body: JSON.stringify({
@@ -107,7 +113,8 @@ test('seller and buyer accounts are limited to their respective API actions', as
       image: ''
     })
   });
-  assert.equal(product.status, 201);
+  assert.equal(productResponse.status, 201);
+  const product = await productResponse.json();
 
   const sellerListings = await fetch(`${apiUrl}/api/products/mine`, {
     headers: demoHeaders('seller-1', 'seller')
@@ -121,8 +128,143 @@ test('seller and buyer accounts are limited to their respective API actions', as
   });
   assert.deepEqual(await otherSellerListings.json(), []);
 
+  const secondProductResponse = await fetch(`${apiUrl}/api/products`, {
+    method: 'POST',
+    headers: demoHeaders('seller-2', 'seller'),
+    body: JSON.stringify({
+      name: 'Local pork',
+      farm: 'Second test farm',
+      category: 'Pork',
+      price: 100,
+      unit: '500g',
+      stock: 3,
+      location: 'Silang, Cavite',
+      description: 'Small-batch pork',
+      image: ''
+    })
+  });
+  assert.equal(secondProductResponse.status, 201);
+  const secondProduct = await secondProductResponse.json();
+
   const sellerOrders = await fetch(`${apiUrl}/api/orders`, {
     headers: demoHeaders('seller-1', 'seller')
   });
   assert.equal(sellerOrders.status, 403);
+
+  const buyerEarnings = await fetch(`${apiUrl}/api/seller/earnings`, {
+    headers: demoHeaders('buyer-1', 'buyer')
+  });
+  assert.equal(buyerEarnings.status, 403);
+
+  const sellerPayouts = await fetch(`${apiUrl}/api/admin/payouts`, {
+    headers: demoHeaders('seller-1', 'seller')
+  });
+  assert.equal(sellerPayouts.status, 403);
+
+  const emptyAdminPayouts = await fetch(`${apiUrl}/api/admin/payouts`, {
+    headers: demoHeaders('admin-1', 'buyer')
+  });
+  assert.deepEqual(await emptyAdminPayouts.json(), []);
+
+  const now = new Date();
+  const deliveryDate = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0')
+  ].join('-');
+  const orderResponse = await fetch(`${apiUrl}/api/orders`, {
+    method: 'POST',
+    headers: demoHeaders('buyer-1', 'buyer'),
+    body: JSON.stringify({
+      items: [
+        { productId: product.id, quantity: 1 },
+        { productId: secondProduct.id, quantity: 2 }
+      ],
+      deliveryDate,
+      deliveryAddress: '123 Test Street, Quezon City',
+      deliveryLocation: { lat: 14.5995, lng: 120.9842 },
+      paymentMethod: 'cod'
+    })
+  });
+  assert.equal(orderResponse.status, 201);
+  const order = await orderResponse.json();
+  assert.ok(order.courierToken);
+  assert.equal(order.sellerEarnings, undefined);
+
+  const sellerEarningsResponse = await fetch(`${apiUrl}/api/seller/earnings`, {
+    headers: demoHeaders('seller-1', 'seller')
+  });
+  const sellerEarnings = await sellerEarningsResponse.json();
+  assert.equal(sellerEarnings.length, 1);
+  assert.equal(sellerEarnings[0].grossAmount, 250);
+  assert.equal(sellerEarnings[0].commissionAmount, 25);
+  assert.equal(sellerEarnings[0].sellerNet, 225);
+  assert.equal(sellerEarnings[0].paymentStatus, 'pending');
+  const secondSellerEarnings = await fetch(`${apiUrl}/api/seller/earnings`, {
+    headers: demoHeaders('seller-2', 'seller')
+  });
+  const secondSellerOrders = await secondSellerEarnings.json();
+  assert.equal(secondSellerOrders.length, 1);
+  assert.equal(secondSellerOrders[0].grossAmount, 200);
+  assert.equal(secondSellerOrders[0].sellerNet, 180);
+
+  const prematurePayout = await fetch(`${apiUrl}/api/admin/payouts/${order.id}`, {
+    method: 'POST',
+    headers: demoHeaders('admin-1', 'buyer'),
+    body: JSON.stringify({ sellerUid: 'seller-1', reference: 'BANK-001' })
+  });
+  assert.equal(prematurePayout.status, 409);
+
+  for (const status of ['preparing', 'out_for_delivery', 'delivered']) {
+    const response = await fetch(`${apiUrl}/api/courier/${order.courierToken}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, cashCollected: status === 'delivered' })
+    });
+    assert.equal(response.status, 200);
+  }
+
+  const readyPayouts = await fetch(`${apiUrl}/api/admin/payouts`, {
+    headers: demoHeaders('admin-1', 'buyer')
+  });
+  const readyPayoutList = await readyPayouts.json();
+  assert.equal(readyPayoutList.length, 2);
+  assert.ok(readyPayoutList.every((payout) => payout.payoutStatus === 'unpaid'));
+
+  const recordedPayoutResponse = await fetch(`${apiUrl}/api/admin/payouts/${order.id}`, {
+    method: 'POST',
+    headers: demoHeaders('admin-1', 'buyer'),
+    body: JSON.stringify({ sellerUid: 'seller-1', reference: 'BANK-001' })
+  });
+  assert.equal(recordedPayoutResponse.status, 200);
+  assert.equal((await recordedPayoutResponse.json()).payoutStatus, 'paid');
+
+  const secondRecordedPayout = await fetch(`${apiUrl}/api/admin/payouts/${order.id}`, {
+    method: 'POST',
+    headers: demoHeaders('admin-1', 'buyer'),
+    body: JSON.stringify({ sellerUid: 'seller-2', reference: 'EWALLET-002' })
+  });
+  assert.equal(secondRecordedPayout.status, 200);
+
+  const duplicatePayout = await fetch(`${apiUrl}/api/admin/payouts/${order.id}`, {
+    method: 'POST',
+    headers: demoHeaders('admin-1', 'buyer'),
+    body: JSON.stringify({ sellerUid: 'seller-1', reference: 'BANK-001' })
+  });
+  assert.equal(duplicatePayout.status, 409);
+
+  const updatedSellerEarnings = await fetch(`${apiUrl}/api/seller/earnings`, {
+    headers: demoHeaders('seller-1', 'seller')
+  });
+  const updatedEarnings = await updatedSellerEarnings.json();
+  assert.equal(updatedEarnings[0].paymentStatus, 'paid');
+  assert.equal(updatedEarnings[0].payoutStatus, 'paid');
+  assert.equal(updatedEarnings[0].payoutReference, 'BANK-001');
+
+  const updatedSecondSellerEarnings = await fetch(`${apiUrl}/api/seller/earnings`, {
+    headers: demoHeaders('seller-2', 'seller')
+  });
+  const finalSecondSellerEarnings = await updatedSecondSellerEarnings.json();
+  assert.equal(finalSecondSellerEarnings[0].payoutStatus, 'paid');
+  assert.equal(finalSecondSellerEarnings[0].payoutReference, 'EWALLET-002');
 });

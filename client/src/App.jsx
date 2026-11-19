@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowRight, Bell, Beef, Check, CircleUserRound, Clock3,
+  ArrowRight, Banknote, Bell, Beef, Check, CircleUserRound, Clock3,
   Heart, Leaf, MapPin, MessageCircle, Minus, Plus, Search, ShieldCheck,
   ShoppingBag, SlidersHorizontal, Sparkles, Sprout, Truck, X
 } from 'lucide-react';
@@ -15,8 +15,8 @@ import {
 } from './orderQueue.js';
 import LoginPage from './LoginPage.jsx';
 import SignupPage from './SignupPage.jsx';
+import { API_URL } from './apiUrl.js';
 
-const API_URL = import.meta.env.VITE_API_URL || '';
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY || '';
 const DeliveryMap = lazy(() => import('./DeliveryMap.jsx'));
 const categories = ['All cuts', 'Beef', 'Pork', 'Chicken', 'Lamb'];
@@ -71,7 +71,7 @@ async function request(path, options = {}, user = null) {
 
 function money(value) {
   return new Intl.NumberFormat('en-PH', {
-    style: 'currency', currency: 'PHP', maximumFractionDigits: 0
+    style: 'currency', currency: 'PHP', maximumFractionDigits: 2
   }).format(value);
 }
 
@@ -160,6 +160,12 @@ function MarketApp() {
   const [ordersOpen, setOrdersOpen] = useState(false);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [customerOrders, setCustomerOrders] = useState([]);
+  const [sellerEarnings, setSellerEarnings] = useState([]);
+  const [sellerEarningsLoading, setSellerEarningsLoading] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminPayouts, setAdminPayouts] = useState([]);
+  const [adminPayoutsLoading, setAdminPayoutsLoading] = useState(false);
+  const [payoutReferences, setPayoutReferences] = useState({});
   const [courierLinks, setCourierLinks] = useState({});
   const [orderConfirmation, setOrderConfirmation] = useState(null);
   const [favorites, setFavorites] = useState(() => {
@@ -222,6 +228,7 @@ function MarketApp() {
     return onAuthStateChanged(auth, (authenticatedUser) => {
       setUser(authenticatedUser);
       setAccountRole(authenticatedUser ? null : 'buyer');
+      setIsAdmin(false);
       setAccountRoleReady(!authenticatedUser);
       setAccountRoleError('');
       setAuthReady(true);
@@ -230,27 +237,68 @@ function MarketApp() {
 
   useEffect(() => {
     if (!authReady || !user) return undefined;
-    if (!firebaseEnabled) {
-      setAccountRole(user.role === 'seller' ? 'seller' : 'buyer');
-      setAccountRoleReady(true);
-      return undefined;
-    }
     let cancelled = false;
     setAccountRoleReady(false);
     setAccountRoleError('');
     request('/api/profile', {}, user)
-      .then(({ role }) => {
+      .then(({ role, isAdmin: admin }) => {
         if (role !== 'buyer' && role !== 'seller') throw new Error('Your account type is invalid.');
-        if (!cancelled) setAccountRole(role);
+        if (!cancelled) {
+          setAccountRole(role);
+          setIsAdmin(admin === true);
+        }
       })
       .catch((error) => {
-        if (!cancelled) setAccountRoleError(error.message);
+        if (!cancelled) {
+          setIsAdmin(false);
+          setAccountRoleError(error.message);
+        }
       })
       .finally(() => {
         if (!cancelled) setAccountRoleReady(true);
       });
     return () => { cancelled = true; };
   }, [authReady, user]);
+
+  useEffect(() => {
+    if (!user || !accountRoleReady || accountRole !== 'seller') {
+      setSellerEarnings([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setSellerEarningsLoading(true);
+    request('/api/seller/earnings', {}, user)
+      .then((earnings) => {
+        if (!cancelled) setSellerEarnings(earnings);
+      })
+      .catch((error) => {
+        if (!cancelled) announce(`Couldn't load your earnings: ${error.message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setSellerEarningsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [accountRole, accountRoleReady, announce, user]);
+
+  useEffect(() => {
+    if (!user || !accountRoleReady || !isAdmin) {
+      setAdminPayouts([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setAdminPayoutsLoading(true);
+    request('/api/admin/payouts', {}, user)
+      .then((payouts) => {
+        if (!cancelled) setAdminPayouts(payouts);
+      })
+      .catch((error) => {
+        if (!cancelled) announce(`Couldn't load seller payouts: ${error.message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setAdminPayoutsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [accountRoleReady, announce, isAdmin, user]);
 
   useEffect(() => {
     if (!authReady || !user || !accountRoleReady || accountRoleError) return;
@@ -463,6 +511,15 @@ function MarketApp() {
   );
   const sellerStock = sellerProducts.reduce((total, product) => total + product.stock, 0);
   const lowStockListings = sellerProducts.filter((product) => product.stock <= 5).length;
+  const awaitingCash = sellerEarnings
+    .filter((order) => order.paymentStatus !== 'paid' && order.status !== 'cancelled')
+    .reduce((total, order) => total + order.sellerNet, 0);
+  const readyForPayout = sellerEarnings
+    .filter((order) => order.paymentStatus === 'paid' && order.payoutStatus !== 'paid')
+    .reduce((total, order) => total + order.sellerNet, 0);
+  const paidOut = sellerEarnings
+    .filter((order) => order.payoutStatus === 'paid')
+    .reduce((total, order) => total + order.sellerNet, 0);
 
   async function loadOrders() {
     setOrdersLoading(true);
@@ -472,6 +529,44 @@ function MarketApp() {
       announce(`Couldn't load deliveries: ${error.message}`);
     } finally {
       setOrdersLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!ordersOpen || accountRole !== 'buyer' || !user) return undefined;
+    let cancelled = false;
+    const refreshRiderLocation = async () => {
+      try {
+        const orders = await request('/api/orders', {}, user);
+        if (!cancelled) setCustomerOrders(orders);
+      } catch {
+        // Keep the last known rider location when a background refresh fails.
+      }
+    };
+    const interval = window.setInterval(refreshRiderLocation, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [accountRole, ordersOpen, user]);
+
+  async function recordPayout(payout) {
+    const key = `${payout.orderId}:${payout.sellerUid}`;
+    const reference = payoutReferences[key]?.trim();
+    if (!reference) {
+      announce('Enter the transfer reference after sending the seller payment.');
+      return;
+    }
+    try {
+      await request(`/api/admin/payouts/${payout.orderId}`, {
+        method: 'POST',
+        body: JSON.stringify({ sellerUid: payout.sellerUid, reference })
+      }, user);
+      const updatedPayouts = await request('/api/admin/payouts', {}, user);
+      setAdminPayouts(updatedPayouts);
+      announce('Payout record saved. Only record a payout after the funds have been sent.');
+    } catch (error) {
+      announce(`Couldn't record seller payout: ${error.message}`);
     }
   }
 
@@ -639,6 +734,7 @@ function MarketApp() {
         if (firebaseEnabled) await signOut(auth);
         else localStorage.removeItem('meathub-demo-user');
         setUser(null);
+        setIsAdmin(false);
         announce('You are signed out.');
       } else {
         window.location.assign('/login');
@@ -731,7 +827,9 @@ function MarketApp() {
           <span>meat<span>hub</span><small>LOCAL • FRESH • FAIR</small></span>
         </a>
         <nav className="desktop-nav" aria-label="Main navigation">
-          {accountRole === 'seller' ? (
+          {isAdmin ? (
+            <a className="nav-active" href="#admin-payouts">Seller payouts</a>
+          ) : accountRole === 'seller' ? (
             <a className="nav-active" href="#seller-dashboard">Seller dashboard</a>
           ) : (
             <>
@@ -775,7 +873,75 @@ function MarketApp() {
       </header>
 
       <main>
-        {accountRole === 'seller' ? (
+        {isAdmin ? (
+          <section className="seller-dashboard" id="admin-payouts" aria-labelledby="admin-payouts-title">
+            <div className="seller-dashboard-heading">
+              <div>
+                <div className="eyebrow section-eyebrow">MEATHUB OPERATIONS</div>
+                <h1 id="admin-payouts-title">Seller payouts</h1>
+                <p>Record a manual payout only after you have sent the seller their funds.</p>
+              </div>
+            </div>
+            {adminPayoutsLoading ? (
+              <div className="seller-empty">Loading eligible payouts…</div>
+            ) : adminPayouts.length === 0 ? (
+              <div className="seller-empty">
+                <b>No completed COD orders</b>
+                <span>Paid orders will appear here after the courier confirms cash collection.</span>
+              </div>
+            ) : (
+              <div className="earnings-list">
+                {adminPayouts.map((payout) => {
+                  const key = `${payout.orderId}:${payout.sellerUid}`;
+                  return (
+                    <article className="earnings-card admin-payout-card" key={key}>
+                      <div className="earnings-card-heading">
+                        <b>Order #{payout.orderId.slice(0, 8)}</b>
+                        <span className={`payout-status ${payout.payoutStatus === 'paid' ? 'payout-complete' : ''}`}>
+                          {payout.payoutStatus === 'paid' ? 'Payout recorded' : 'Ready for payout'}
+                        </span>
+                      </div>
+                      <p className="payout-seller-id">Seller account: {payout.sellerUid}</p>
+                      <p className="earnings-items">
+                        {payout.items.map((item) => `${item.name} × ${item.quantity}`).join(' · ')}
+                      </p>
+                      <div className="earnings-breakdown">
+                        <span>Order share <b>{money(payout.grossAmount)}</b></span>
+                        <span>Platform fee <b>−{money(payout.commissionAmount)}</b></span>
+                        <span>Seller net <b>{money(payout.sellerNet)}</b></span>
+                      </div>
+                      {payout.payoutStatus === 'paid' ? (
+                        <small className="payout-reference">
+                          Sent {new Date(payout.payoutAt).toLocaleDateString()} · Ref: {payout.payoutReference}
+                        </small>
+                      ) : (
+                        <form className="payout-record-form" onSubmit={(event) => {
+                          event.preventDefault();
+                          recordPayout(payout);
+                        }}>
+                          <label>
+                            Transfer reference
+                            <input
+                              required
+                              maxLength="120"
+                              value={payoutReferences[key] || ''}
+                              onChange={(event) => setPayoutReferences((current) => ({
+                                ...current,
+                                [key]: event.target.value
+                              }))}
+                              placeholder="Bank/e-wallet transaction ID"
+                            />
+                          </label>
+                          <button className="outline-button" type="submit"><Banknote size={15} /> Record sent payout</button>
+                        </form>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        ) : accountRole === 'seller' ? (
           <section className="seller-dashboard" id="seller-dashboard" aria-labelledby="seller-dashboard-title">
             <div className="seller-dashboard-heading">
               <div>
@@ -797,6 +963,50 @@ function MarketApp() {
               <div><small>Units in stock</small><b>{sellerStock}</b></div>
               <div><small>Low stock (5 or less)</small><b>{lowStockListings}</b></div>
             </div>
+            <div className="seller-listing-heading">
+              <h2>Your earnings</h2>
+            </div>
+            <div className="seller-summary earnings-summary">
+              <div><small>Awaiting delivery and cash</small><b>{money(awaitingCash)}</b></div>
+              <div><small>Ready for manual payout</small><b>{money(readyForPayout)}</b></div>
+              <div><small>Already paid out</small><b>{money(paidOut)}</b></div>
+            </div>
+            {sellerEarningsLoading ? (
+              <div className="seller-empty">Loading your earnings…</div>
+            ) : sellerEarnings.length === 0 ? (
+              <div className="seller-empty">
+                <b>No orders yet</b>
+                <span>Orders for your listings will appear here. Earnings are confirmed after COD collection.</span>
+              </div>
+            ) : (
+              <div className="earnings-list">
+                {sellerEarnings.map((order) => (
+                  <article className="earnings-card" key={order.id}>
+                    <div className="earnings-card-heading">
+                      <b>Order #{order.id.slice(0, 8)}</b>
+                      <span className={`order-status-pill status-${order.status}`}>
+                        {order.paymentStatus === 'paid' ? 'COD collected' : order.status === 'cancelled' ? 'Cancelled' : 'Awaiting cash'}
+                      </span>
+                    </div>
+                    <p className="earnings-items">
+                      {order.items.map((item) => `${item.name} × ${item.quantity}`).join(' · ')}
+                    </p>
+                    <div className="earnings-breakdown">
+                      <span>Order share <b>{money(order.grossAmount)}</b></span>
+                      <span>Platform fee <b>−{money(order.commissionAmount)}</b></span>
+                      <span>Your net <b>{money(order.sellerNet)}</b></span>
+                    </div>
+                    <small className="payout-reference">
+                      {order.payoutStatus === 'paid'
+                        ? `Payout recorded ${new Date(order.payoutAt).toLocaleDateString()} · Ref: ${order.payoutReference}`
+                        : order.paymentStatus === 'paid'
+                          ? 'COD collected · waiting for manual seller payout'
+                          : 'Net amount is an estimate until the courier collects COD'}
+                    </small>
+                  </article>
+                ))}
+              </div>
+            )}
             <div className="seller-listing-heading">
               <h2>Your listings</h2>
             </div>
@@ -1020,6 +1230,18 @@ function MarketApp() {
                   </div>
                   <p>{order.deliveryAddress}</p>
                   <small>{new Date(`${order.deliveryDate}T00:00:00`).toLocaleDateString()} · COD · {order.paymentStatus === 'paid' ? 'Paid' : 'Pay on arrival'}</small>
+                  {order.status === 'out_for_delivery' && order.deliveryLocation && (
+                    <div className="buyer-live-map">
+                      <Suspense fallback={<div className="map-loading">Loading live map…</div>}>
+                        <DeliveryMap destination={order.deliveryLocation} courierLocation={order.courierLocation} />
+                      </Suspense>
+                      <small className="buyer-live-map-note">
+                        {order.courierLocation
+                          ? <><span className="live-dot" /> Rider updated {new Date(order.courierLocation.updatedAt).toLocaleTimeString()}</>
+                          : 'Waiting for the rider to share their GPS location.'}
+                      </small>
+                    </div>
+                  )}
                   <div className="customer-order-actions">
                     <a className="text-button" href={`/track/${order.trackingToken}`} target="_blank" rel="noreferrer">Track on map <ArrowRight size={14} /></a>
                     {!['delivered', 'cancelled'].includes(order.status) && (
