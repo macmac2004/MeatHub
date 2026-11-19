@@ -1098,6 +1098,19 @@ export async function saveSubscription(subscription, userUid) {
     .doc(Buffer.from(subscription.endpoint).toString('base64url')).set(subscription);
 }
 
+export async function deleteSubscription(endpoint, userUid) {
+  if (!endpoint) return false;
+  if (isDemo) {
+    const before = memory.subscriptions.length;
+    memory.subscriptions = memory.subscriptions
+      .filter((item) => item.endpoint !== endpoint || item.userUid !== userUid);
+    return memory.subscriptions.length !== before;
+  }
+  await db.collection('pushSubscriptions').doc(userUid).collection('subscriptions')
+    .doc(Buffer.from(endpoint).toString('base64url')).delete();
+  return true;
+}
+
 export async function listSubscriptions(userUid = null) {
   if (isDemo) {
     return userUid

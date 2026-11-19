@@ -25,6 +25,7 @@ import {
   getOrderMessageContext,
   getOrderNotificationContext,
   getTrackedOrder,
+  deleteSubscription,
   listAdminPayouts,
   listOrderMessages,
   listOrders,
@@ -570,6 +571,18 @@ app.post('/api/push/subscribe', authenticate, async (req, res, next) => {
   try {
     await saveSubscription(req.body, req.user.uid);
     res.status(201).json({ subscribed: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete('/api/push/subscribe', authenticate, async (req, res, next) => {
+  if (!req.body?.endpoint) {
+    return res.status(400).json({ error: 'A push subscription endpoint is required.' });
+  }
+  try {
+    await deleteSubscription(req.body.endpoint, req.user.uid);
+    res.json({ subscribed: false });
   } catch (error) {
     next(error);
   }

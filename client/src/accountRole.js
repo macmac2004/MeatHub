@@ -1,6 +1,32 @@
 import { API_URL } from './apiUrl.js';
 
 const PENDING_ROLE_KEY = 'meathub-pending-role';
+const CACHED_ROLE_KEY = 'meathub-account-role';
+const VALID_ROLES = ['buyer', 'seller', 'rider'];
+
+export function cacheAccountRole(uid, { role, isAdmin }) {
+  if (!uid || !VALID_ROLES.includes(role)) return;
+  try {
+    localStorage.setItem(CACHED_ROLE_KEY, JSON.stringify({ uid, role, isAdmin: isAdmin === true }));
+  } catch {
+    // Private browsing can refuse storage; the offline fallback just stays unavailable.
+  }
+}
+
+export function readCachedAccountRole(uid) {
+  if (!uid) return null;
+  try {
+    const cached = JSON.parse(localStorage.getItem(CACHED_ROLE_KEY) || 'null');
+    if (!cached || cached.uid !== uid || !VALID_ROLES.includes(cached.role)) return null;
+    return { role: cached.role, isAdmin: cached.isAdmin === true };
+  } catch {
+    return null;
+  }
+}
+
+export function clearCachedAccountRole() {
+  localStorage.removeItem(CACHED_ROLE_KEY);
+}
 
 export async function saveAccountRole(user, role) {
   const response = await fetch(`${API_URL}/api/profile/role`, {

@@ -16,6 +16,8 @@ import {
 import LoginPage from './LoginPage.jsx';
 import SignupPage from './SignupPage.jsx';
 import { API_URL } from './apiUrl.js';
+import { cacheAccountRole, clearCachedAccountRole, readCachedAccountRole } from './accountRole.js';
+import { cacheOrderMessages, cacheOrders, readCachedOrderMessages, readCachedOrders } from './offlineCache.js';
 
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY || '';
 const DeliveryMap = lazy(() => import('./DeliveryMap.jsx'));
@@ -160,6 +162,10 @@ function MarketApp() {
   const [queuedCount, setQueuedCount] = useState(0);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [apiPushReady, setApiPushReady] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [pushPermission, setPushPermission] = useState(() => ('Notification' in window ? Notification.permission : 'unsupported'));
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
   const [deliveryDate, setDeliveryDate] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [deliveryLocation, setDeliveryLocation] = useState(null);
@@ -258,13 +264,21 @@ function MarketApp() {
         if (!cancelled) {
           setAccountRole(role);
           setIsAdmin(admin === true);
+          cacheAccountRole(user.uid, { role, isAdmin: admin === true });
         }
       })
       .catch((error) => {
-        if (!cancelled) {
-          setIsAdmin(false);
-          setAccountRoleError(error.message);
+        if (cancelled) return;
+        const saved = navigator.onLine ? null : readCachedAccountRole(user.uid);
+        if (saved) {
+          setAccountRole(saved.role);
+          setIsAdmin(saved.isAdmin);
+          setAccountRoleError('');
+          announce(`Offline mode · signed in as ${saved.role} from this device.`);
+          return;
         }
+        setIsAdmin(false);
+        setAccountRoleError(error.message);
       })
       .finally(() => {
         if (!cancelled) setAccountRoleReady(true);
@@ -558,7 +572,14 @@ function MarketApp() {
           setOrderChatError('');
         }
       } catch (error) {
-        if (!cancelled) setOrderChatError(error.message);
+        if (cancelled) return;
+        const saved = readCachedOrderMessages(user.uid, orderChat.id);
+        if (saved) {
+          setOrderChatMessages(saved);
+          setOrderChatError('Offline — showing saved messages. Sending needs a connection.');
+        } else {
+          setOrderChatError(error.message);
+        }
       }
     };
     loadMessages();
@@ -575,9 +596,14 @@ function MarketApp() {
     }
   }, [orderChatMessages, orderChat]);
 
+  useEffect(() => {
+    if (!orderChat) return;
+    cacheOrderMessages(user?.uid, orderChat.id, orderChatMessages);
+  }, [orderChat, orderChatMessages, user]);
+
   function openOrderChat(order) {
     setOrderChat({ id: order.id, title: `Order #${order.id.slice(0, 8)}` });
-    setOrderChatMessages([]);
+    setOrderChatMessages(readCachedOrderMessages(user?.uid, order.id) || []);
     setOrderChatText('');
     setOrderChatError('');
   }
@@ -640,9 +666,17 @@ function MarketApp() {
   async function loadOrders() {
     setOrdersLoading(true);
     try {
-      setCustomerOrders(await request('/api/orders', {}, user));
+      const orders = await request('/api/orders', {}, user);
+      setCustomerOrders(orders);
+      cacheOrders(user?.uid, orders);
     } catch (error) {
-      announce(`Couldn't load deliveries: ${error.message}`);
+      const saved = readCachedOrders(user?.uid);
+      if (saved) {
+        setCustomerOrders(saved);
+        announce('Showing your saved deliveries. Fresh status needs a connection.');
+      } else {
+        announce(`Couldn't load deliveries: ${error.message}`);
+      }
     } finally {
       setOrdersLoading(false);
     }
@@ -654,7 +688,10 @@ function MarketApp() {
     const refreshRiderLocation = async () => {
       try {
         const orders = await request('/api/orders', {}, user);
-        if (!cancelled) setCustomerOrders(orders);
+        if (!cancelled) {
+          setCustomerOrders(orders);
+          cacheOrders(user.uid, orders);
+        }
       } catch {
         // Keep the last known rider location when a background refresh fails.
       }
@@ -881,6 +918,7 @@ function MarketApp() {
       if (user) {
         if (firebaseEnabled) await signOut(auth);
         else localStorage.removeItem('meathub-demo-user');
+        clearCachedAccountRole();
         setUser(null);
         setIsAdmin(false);
         announce('You are signed out.');
@@ -892,12 +930,32 @@ function MarketApp() {
     }
   }
 
+  async function refreshPushState() {
+    setPushPermission('Notification' in window ? Notification.permission : 'unsupported');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setPushSubscribed(false);
+      return;
+    }
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      setPushSubscribed(Boolean(await registration.pushManager.getSubscription()));
+    } catch {
+      setPushSubscribed(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    refreshPushState();
+  }, [notificationsOpen]);
+
   async function enableNotifications() {
     if (!('Notification' in window)) {
       announce('This browser does not support notifications.');
       return;
     }
     const permission = await Notification.requestPermission();
+    setPushPermission(permission);
     if (permission !== 'granted') {
       announce('Notifications were not enabled.');
       return;
@@ -925,9 +983,32 @@ function MarketApp() {
       await request('/api/push/subscribe', {
         method: 'POST', body: JSON.stringify(subscription)
       }, user);
+      setPushSubscribed(true);
       announce('Push notifications are enabled.');
     } catch (error) {
       announce(`Could not enable push notifications: ${error.message}`);
+    }
+  }
+
+  async function disableNotifications() {
+    setPushBusy(true);
+    try {
+      const registration = 'serviceWorker' in navigator && 'PushManager' in window
+        ? await navigator.serviceWorker.ready
+        : null;
+      const subscription = registration ? await registration.pushManager.getSubscription() : null;
+      if (subscription) {
+        await subscription.unsubscribe();
+        await request('/api/push/subscribe', {
+          method: 'DELETE', body: JSON.stringify({ endpoint: subscription.endpoint })
+        }, user).catch((error) => console.warn('Could not remove the saved push subscription:', error));
+      }
+      setPushSubscribed(false);
+      announce('Push notifications are off on this device.');
+    } catch (error) {
+      announce(`Could not turn off push notifications: ${error.message}`);
+    } finally {
+      setPushBusy(false);
     }
   }
 
@@ -991,7 +1072,7 @@ function MarketApp() {
         </nav>
         <div className="header-actions">
           {['buyer', 'seller'].includes(accountRole) && (
-            <button className="icon-button notification-button" aria-label={pushEnabled ? 'Notifications enabled' : 'Enable notifications'} onClick={enableNotifications}>
+            <button className="icon-button notification-button" aria-label={pushEnabled ? 'Notifications enabled' : 'Enable notifications'} onClick={() => setNotificationsOpen(true)}>
               <Bell size={19} />
             </button>
           )}
@@ -1581,6 +1662,54 @@ function MarketApp() {
               <a className="outline-button" href={`/courier/${orderConfirmation.courierToken}`} target="_blank" rel="noreferrer">Share courier GPS link <Truck size={16} /></a>
             </div>
             <small className="commission-note">The courier link grants live-location and status access. Share it only with your assigned courier.</small>
+          </section>
+        </div>
+      )}
+
+      {notificationsOpen && ['buyer', 'seller'].includes(accountRole) && (
+        <div className="overlay modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setNotificationsOpen(false)}>
+          <section className="delivery-confirmation notifications-panel" aria-label="Notification settings">
+            <div className="panel-heading">
+              <div><small>NOTIFICATION SETTINGS</small><h2>Stay in the loop.</h2></div>
+              <button className="icon-button" onClick={() => setNotificationsOpen(false)} aria-label="Close notification settings"><X /></button>
+            </div>
+            <p className="modal-intro">Order, chat, and delivery updates arrive on this device. Turn them off any time from here.</p>
+            <div className="push-status-list">
+              <div className="push-status">
+                <span>Browser permission</span>
+                <b className={pushPermission === 'granted' ? 'push-on' : pushPermission === 'denied' ? 'push-off' : ''}>
+                  {pushPermission === 'granted' ? 'Allowed'
+                    : pushPermission === 'denied' ? 'Blocked'
+                    : pushPermission === 'unsupported' ? 'Not supported' : 'Not asked yet'}
+                </b>
+              </div>
+              <div className="push-status">
+                <span>Push on this device</span>
+                <b className={pushSubscribed ? 'push-on' : ''}>{pushSubscribed ? 'Subscribed' : 'Not subscribed'}</b>
+              </div>
+              <div className="push-status">
+                <span>Server push</span>
+                <b className={apiPushReady ? 'push-on' : 'push-off'}>{apiPushReady ? 'Ready' : 'Not configured'}</b>
+              </div>
+            </div>
+            {pushPermission === 'denied' && (
+              <p className="delivery-error" role="status">Your browser is blocking notifications for MeatHub. Allow them in the site settings (the lock icon in the address bar), then reload this page.</p>
+            )}
+            {pushPermission !== 'unsupported' && !apiPushReady && (
+              <p className="push-hint">This device can still show alerts while MeatHub is open, but updates while the app is closed need push keys on the server.</p>
+            )}
+            <div className="push-actions">
+              {pushSubscribed ? (
+                <button className="outline-button" type="button" onClick={disableNotifications} disabled={pushBusy}>
+                  <Bell size={16} /> Turn off on this device
+                </button>
+              ) : (
+                <button className="primary-button" type="button" onClick={enableNotifications} disabled={pushBusy || pushPermission === 'unsupported'}>
+                  <Bell size={16} /> Enable notifications
+                </button>
+              )}
+              <button className="outline-button" type="button" onClick={refreshPushState} disabled={pushBusy}>Refresh status</button>
+            </div>
           </section>
         </div>
       )}

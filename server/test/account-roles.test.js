@@ -419,3 +419,27 @@ test('seller and buyer accounts are limited to their respective API actions', as
   });
   assert.equal(missingContact.status, 400);
 });
+
+test('push subscriptions can be removed by their owner', async () => {
+  const anonymous = await fetch(`${apiUrl}/api/push/subscribe`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'https://push.example.test/one' })
+  });
+  assert.equal(anonymous.status, 401);
+
+  const missingEndpoint = await fetch(`${apiUrl}/api/push/subscribe`, {
+    method: 'DELETE',
+    headers: demoHeaders('buyer-1', 'buyer'),
+    body: JSON.stringify({})
+  });
+  assert.equal(missingEndpoint.status, 400);
+
+  const removed = await fetch(`${apiUrl}/api/push/subscribe`, {
+    method: 'DELETE',
+    headers: demoHeaders('buyer-1', 'buyer'),
+    body: JSON.stringify({ endpoint: 'https://push.example.test/one' })
+  });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(await removed.json(), { subscribed: false });
+});
