@@ -11,16 +11,22 @@ import { WebSocketServer } from 'ws';
 import {
   archiveOrder,
   archiveProduct,
+  claimDelivery,
+  confirmSellerOrder,
   createCourierLink,
   createOrder,
   createProduct,
+  declineSellerOrder,
   demoMode,
   getAccountRole,
   getCourierOrder,
+  getCourierOrderContext,
+  getOrderNotificationContext,
   getTrackedOrder,
   listAdminPayouts,
   listOrders,
   listProducts,
+  listRiderOrders,
   listSellerEarnings,
   listSubscriptions,
   recordSellerPayout,
@@ -105,7 +111,7 @@ async function authenticate(req, res, next) {
   if (demoMode) {
     const uid = req.get('x-demo-user-id')?.trim();
     const role = req.get('x-demo-user-role');
-    if (!uid || uid.length > 120 || !['buyer', 'seller'].includes(role)) {
+    if (!uid || uid.length > 120 || !['buyer', 'seller', 'rider'].includes(role)) {
       return res.status(401).json({ error: 'Sign in is required.' });
     }
     req.user = { uid, role };
@@ -193,8 +199,8 @@ app.get('/api/profile', authenticate, async (req, res, next) => {
 
 app.post('/api/profile/role', authenticate, async (req, res, next) => {
   const { role } = req.body || {};
-  if (role !== 'buyer' && role !== 'seller') {
-    return res.status(400).json({ error: 'Choose buyer or seller as your account type.' });
+  if (!['buyer', 'seller', 'rider'].includes(role)) {
+    return res.status(400).json({ error: 'Choose buyer, seller, or rider as your account type.' });
   }
   if (demoMode) {
     if (req.user.role !== role) {
@@ -308,6 +314,54 @@ app.get('/api/seller/earnings', authenticate, requireRole('seller'), async (req,
   }
 });
 
+app.post('/api/seller/orders/:id/confirm', authenticate, requireRole('seller'), async (req, res, next) => {
+  try {
+    const order = await confirmSellerOrder(req.params.id, req.user.uid);
+    if (!order) return res.status(404).json({ error: 'Order waiting for your confirmation was not found.' });
+    if (order.status === 'confirmed') {
+      notifyBuyerOfSellerDecision(req.params.id, 'confirmed');
+    }
+    res.json(order);
+  } catch (error) {
+    if (error.message.startsWith('This order') || error.message.startsWith('Your confirmation')) {
+      return res.status(409).json({ error: error.message });
+    }
+    next(error);
+  }
+});
+
+app.post('/api/seller/orders/:id/decline', authenticate, requireRole('seller'), async (req, res, next) => {
+  try {
+    const order = await declineSellerOrder(req.params.id, req.user.uid);
+    if (!order) return res.status(404).json({ error: 'Order waiting for your confirmation was not found.' });
+    notifyBuyerOfSellerDecision(req.params.id, 'declined');
+    res.json(order);
+  } catch (error) {
+    if (error.message.startsWith('This order') || error.message.startsWith('Your confirmation')) {
+      return res.status(409).json({ error: error.message });
+    }
+    next(error);
+  }
+});
+
+app.get('/api/rider/orders', authenticate, requireRole('rider'), async (req, res, next) => {
+  try {
+    res.json(await listRiderOrders(req.user.uid));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/rider/orders/:id/claim', authenticate, requireRole('rider'), async (req, res, next) => {
+  try {
+    const delivery = await claimDelivery(req.params.id, req.user.uid, req.user.name || 'MeatHub rider');
+    if (!delivery) return res.status(409).json({ error: 'This delivery is no longer available to claim.' });
+    res.json(delivery);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get('/api/admin/payouts', authenticate, requireAdmin, async (_req, res, next) => {
   try {
     res.json(await listAdminPayouts());
@@ -340,7 +394,7 @@ app.post('/api/admin/payouts/:orderId', authenticate, requireAdmin, async (req, 
 });
 
 app.post('/api/orders', authenticate, requireRole('buyer'), async (req, res, next) => {
-  const { items, deliveryDate, deliveryAddress, deliveryLocation, paymentMethod } = req.body || {};
+  const { items, deliveryDate, deliveryAddress, deliveryLocation, paymentMethod, customerName, customerPhone } = req.body || {};
   if (!Array.isArray(items) || items.length === 0 ||
       items.some((item) => !item || typeof item.productId !== 'string' || !item.productId.trim() || !Number.isInteger(item.quantity) || item.quantity < 1) ||
       new Set(items.map((item) => item.productId)).size !== items.length) {
@@ -358,15 +412,25 @@ app.post('/api/orders', authenticate, requireRole('buyer'), async (req, res, nex
   if (paymentMethod !== 'cod') {
     return res.status(400).json({ error: 'Cash on delivery is the only supported payment method.' });
   }
+  const contactName = typeof customerName === 'string' ? customerName.trim() : '';
+  if (contactName.length < 2 || contactName.length > 100) {
+    return res.status(400).json({ error: 'Enter the name of the person receiving the order.' });
+  }
+  const contactPhone = typeof customerPhone === 'string' ? customerPhone.trim() : '';
+  if (!/^[+0-9()\-\s]{7,20}$/.test(contactPhone) || contactPhone.replace(/\D/g, '').length < 7) {
+    return res.status(400).json({ error: 'Enter a valid contact phone number for the rider.' });
+  }
   try {
     const order = await createOrder(items, {
       deliveryDate,
       deliveryAddress: deliveryAddress.trim(),
-      deliveryLocation: { lat: deliveryLocation.lat, lng: deliveryLocation.lng }
+      deliveryLocation: { lat: deliveryLocation.lat, lng: deliveryLocation.lng },
+      customerName: contactName,
+      customerPhone: contactPhone
     }, req.user.uid);
     sendPushToSubscribers({ title: 'MeatHub COD delivery', body: 'A new cash-on-delivery order was placed.' })
       .catch((error) => console.error('Could not send delivery notifications:', error));
-    const { sellerEarnings: _sellerEarnings, sellerUids: _sellerUids, ...customerOrder } = order;
+    const { sellerEarnings: _sellerEarnings, sellerUids: _sellerUids, sellerConfirmations: _sellerConfirmations, ...customerOrder } = order;
     customerOrder.items = customerOrder.items.map(({ sellerUid: _sellerUid, ...item }) => item);
     res.status(201).json(customerOrder);
   } catch (error) {
@@ -407,6 +471,8 @@ app.post('/api/courier/:courierToken/location', async (req, res, next) => {
   try {
     const order = await updateCourierLocation(req.params.courierToken, location);
     if (!order) return res.status(404).json({ error: 'Courier link was not found.' });
+    notifyBuyerOfDeliveryUpdate(req.params.courierToken, 'location', order.status)
+      .catch((error) => console.error('Could not send rider location push:', error));
     res.json(order);
   } catch (error) {
     if (error.message.startsWith('Live location sharing')) {
@@ -424,6 +490,8 @@ app.patch('/api/courier/:courierToken/status', async (req, res, next) => {
   try {
     const order = await updateCourierStatus(req.params.courierToken, status, cashCollected);
     if (!order) return res.status(404).json({ error: 'Courier link was not found.' });
+    notifyBuyerOfDeliveryUpdate(req.params.courierToken, 'status', order.status)
+      .catch((error) => console.error('Could not send delivery status push:', error));
     res.json(order);
   } catch (error) {
     if (error.message.startsWith('Invalid delivery status') || error.message.startsWith('Collect the cash')) {
@@ -453,7 +521,7 @@ app.post('/api/orders/:id/archive', authenticate, requireRole('buyer'), async (r
   }
 });
 
-app.post('/api/push/subscribe', authenticate, requireRole('buyer'), async (req, res, next) => {
+app.post('/api/push/subscribe', authenticate, async (req, res, next) => {
   if (!hasPushKeys) return res.status(503).json({ error: 'Web Push is not configured on this server.' });
   if (!req.body?.endpoint || !req.body?.keys?.p256dh || !req.body?.keys?.auth) {
     return res.status(400).json({ error: 'Invalid push subscription.' });
@@ -466,9 +534,69 @@ app.post('/api/push/subscribe', authenticate, requireRole('buyer'), async (req, 
   }
 });
 
-async function sendPushToSubscribers(payload) {
+const deliveryStatusMessages = {
+  preparing: 'Your order is being prepared.',
+  out_for_delivery: 'Your rider is on the way. Tap to follow the live map.',
+  delivered: 'Delivered — COD cash collected.',
+  cancelled: 'Your delivery was cancelled.'
+};
+const locationPushTimes = new Map();
+const locationPushIntervalMs = 10 * 60 * 1000;
+
+async function notifyBuyerOfDeliveryUpdate(courierToken, kind, status) {
   if (!hasPushKeys) return;
-  const subscriptions = await listSubscriptions();
+  const context = await getCourierOrderContext(courierToken);
+  if (!context?.customerUid || !context.trackingToken) return;
+  if (kind === 'location') {
+    const lastPush = locationPushTimes.get(context.orderId) || 0;
+    if (Date.now() - lastPush < locationPushIntervalMs) return;
+    locationPushTimes.set(context.orderId, Date.now());
+  }
+  const orderLabel = `Order #${context.orderId.slice(0, 8)}`;
+  const payload = kind === 'location'
+    ? {
+        title: 'Your rider is moving',
+        body: `${orderLabel}: a new rider location is available. Tap to view the map.`,
+        url: `/track/${context.trackingToken}`,
+        tag: `order-${context.orderId}`
+      }
+    : {
+        title: 'MeatHub delivery update',
+        body: `${orderLabel}: ${deliveryStatusMessages[status] || `status is now ${status}.`}`,
+        url: `/track/${context.trackingToken}`,
+        tag: `order-${context.orderId}`
+      };
+  await sendPushToSubscribers(payload, context.customerUid);
+}
+
+async function notifyBuyerOfSellerDecision(orderId, decision) {
+  if (!hasPushKeys) return;
+  try {
+    const context = await getOrderNotificationContext(orderId);
+    if (!context?.customerUid || !context.trackingToken) return;
+    const orderLabel = `Order #${orderId.slice(0, 8)}`;
+    const payload = decision === 'confirmed'
+      ? {
+          title: 'Your order is confirmed',
+          body: `${orderLabel}: the seller confirmed your delivery.`,
+          url: `/track/${context.trackingToken}`,
+          tag: `order-${orderId}`
+        }
+      : {
+          title: 'Your order was cancelled',
+          body: `${orderLabel}: a seller could not fulfill it. Stock was released and no payment is due.`,
+          url: `/track/${context.trackingToken}`,
+          tag: `order-${orderId}`
+        };
+    await sendPushToSubscribers(payload, context.customerUid);
+  } catch (error) {
+    console.error('Could not send seller decision push:', error);
+  }
+}
+
+async function sendPushToSubscribers(payload, userUid = null) {
+  if (!hasPushKeys) return;
+  const subscriptions = await listSubscriptions(userUid);
   await Promise.all(subscriptions.map(async (subscription) => {
     try {
       await webpush.sendNotification(subscription, JSON.stringify(payload));

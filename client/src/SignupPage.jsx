@@ -141,6 +141,10 @@ export default function SignupPage() {
                 <input type="radio" name="account-role" value="seller" checked={role === 'seller'} onChange={() => setRole('seller')} />
                 <span><b>Seller</b><small>Manage your meat listings and stock.</small></span>
               </label>
+              <label className={role === 'rider' ? 'account-role-option selected' : 'account-role-option'}>
+                <input type="radio" name="account-role" value="rider" checked={role === 'rider'} onChange={() => setRole('rider')} />
+                <span><b>Rider</b><small>Claim deliveries and share your live location.</small></span>
+              </label>
             </fieldset>
             <button className="auth-submit" type="submit" disabled={busy}>
               {busy ? 'Creating account…' : `Create ${role} account`}

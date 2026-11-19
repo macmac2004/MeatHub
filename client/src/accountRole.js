@@ -33,7 +33,7 @@ export function clearPendingAccountRole() {
 export async function applyPendingAccountRole(user) {
   const pending = JSON.parse(localStorage.getItem(PENDING_ROLE_KEY) || 'null');
   if (!pending || pending.email !== user.email?.trim().toLowerCase()) return;
-  if (pending.role !== 'buyer' && pending.role !== 'seller') {
+  if (!['buyer', 'seller', 'rider'].includes(pending.role)) {
     throw new Error('The saved account type is invalid. Create a new account or contact support.');
   }
   await saveAccountRole(user, pending.role);

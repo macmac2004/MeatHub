@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Check, Clock3, LocateFixed, MapPin, PackageCheck, Truck } from 'lucide-react';
+import { ArrowLeft, Check, CircleUserRound, Clock3, LocateFixed, MapPin, PackageCheck, Phone, Truck } from 'lucide-react';
 import { API_URL } from './apiUrl.js';
 
 const DeliveryMap = lazy(() => import('./DeliveryMap.jsx'));
 const statusSteps = [
+  { id: 'pending_seller', label: 'Waiting for seller' },
   { id: 'confirmed', label: 'Order confirmed' },
   { id: 'preparing', label: 'Preparing' },
   { id: 'out_for_delivery', label: 'Out for delivery' },
@@ -205,11 +206,23 @@ export function CourierPage({ token }) {
             <MapPin size={18} />
             <span><small>DELIVER TO</small><b>{order.deliveryAddress}</b></span>
           </div>
+          {(order.customerName || order.customerPhone) && (
+            <div className="courier-contact">
+              <CircleUserRound size={18} />
+              <span><small>RECIPIENT</small><b>{order.customerName || 'MeatHub buyer'}</b></span>
+              {order.customerPhone && (
+                <a href={`tel:${order.customerPhone}`}><Phone size={15} /> {order.customerPhone}</a>
+              )}
+            </div>
+          )}
           <DeliveryProgress status={order.status} />
           <DeliveryMapCard order={order} />
           {error && <p className="delivery-error" role="alert">{error}</p>}
           {gpsError && <p className="gps-message" role="status">{gpsError}</p>}
           <div className="courier-actions">
+            {order.status === 'pending_seller' && (
+              <p className="gps-message">Waiting for the seller to confirm this order before delivery can start.</p>
+            )}
             {order.status === 'confirmed' && (
               <button className="primary-button checkout-button" onClick={() => advanceStatus('preparing')}>
                 <PackageCheck size={16} /> Start preparing

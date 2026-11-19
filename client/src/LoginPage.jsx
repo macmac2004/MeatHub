@@ -41,7 +41,7 @@ export default function LoginPage() {
           uid: account.uid,
           displayName: account.name,
           email: account.email,
-          role: account.role === 'seller' ? 'seller' : 'buyer'
+          role: ['buyer', 'seller', 'rider'].includes(account.role) ? account.role : 'buyer'
         }));
       }
       window.location.assign('/');

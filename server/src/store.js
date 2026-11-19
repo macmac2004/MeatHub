@@ -339,7 +339,7 @@ export async function getAccountRole(uid) {
     const snapshot = await transaction.get(reference);
     if (snapshot.exists) {
       const role = snapshot.data().role;
-      if (role === 'buyer' || role === 'seller') return role;
+      if (role === 'buyer' || role === 'seller' || role === 'rider') return role;
       if (role) throw new Error(`Account ${uid} has an invalid role.`);
     }
     transaction.set(reference, { role: 'buyer', createdAt: new Date().toISOString() }, { merge: true });
@@ -348,6 +348,9 @@ export async function getAccountRole(uid) {
 }
 
 export async function registerAccountRole(uid, role) {
+  if (!['buyer', 'seller', 'rider'].includes(role)) {
+    throw new Error('Choose buyer, seller, or rider as your account type.');
+  }
   const reference = db.collection('users').doc(uid);
   return db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(reference);
@@ -427,7 +430,7 @@ export async function archiveProduct(id, ownerUid) {
 }
 
 function customerOrder(order) {
-  const { courierToken, sellerEarnings: _sellerEarnings, sellerUids: _sellerUids, ...details } = order;
+  const { courierToken, sellerEarnings: _sellerEarnings, sellerUids: _sellerUids, sellerConfirmations: _sellerConfirmations, ...details } = order;
   return {
     ...details,
     items: details.items.map(({ sellerUid: _sellerUid, ...item }) => item)
@@ -442,6 +445,11 @@ function sellerOrder(order, sellerUid) {
     createdAt: order.createdAt,
     status: order.status,
     paymentStatus: order.paymentStatus,
+    deliveryDate: order.deliveryDate,
+    deliveryAddress: order.deliveryAddress,
+    customerName: order.customerName || '',
+    customerPhone: order.customerPhone || '',
+    sellerConfirmation: order.sellerConfirmations?.[sellerUid] || 'confirmed',
     items: order.items
       .filter((item) => item.sellerUid === sellerUid)
       .map(({ name, quantity, unitPrice }) => ({ name, quantity, unitPrice })),
@@ -481,6 +489,8 @@ function trackedOrder(order) {
     deliveryDate: order.deliveryDate,
     deliveryAddress: order.deliveryAddress,
     deliveryLocation: order.deliveryLocation,
+    customerName: order.customerName || '',
+    customerPhone: order.customerPhone || '',
     courierLocation: order.courierLocation,
     trackingUpdatedAt: order.trackingUpdatedAt,
     paymentMethod: order.paymentMethod,
@@ -513,10 +523,12 @@ export async function createOrder(items, delivery, customerUid) {
     deliveryDate: delivery.deliveryDate,
     deliveryAddress: delivery.deliveryAddress,
     deliveryLocation: delivery.deliveryLocation,
+    customerName: delivery.customerName,
+    customerPhone: delivery.customerPhone,
     paymentMethod: 'cod',
     paymentStatus: 'pending',
-    status: 'confirmed',
-    statusHistory: [{ status: 'confirmed', updatedAt: now }],
+    status: 'pending_seller',
+    statusHistory: [{ status: 'pending_seller', updatedAt: now }],
     courierLocation: null,
     trackingUpdatedAt: now,
     trackingToken,
@@ -540,6 +552,9 @@ export async function createOrder(items, delivery, customerUid) {
       items: lines,
       total: lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
       ...sellerEarningsFields(lines),
+      sellerConfirmations: Object.fromEntries(
+        [...new Set(lines.map((line) => line.sellerUid))].map((uid) => [uid, 'pending'])
+      ),
       ...orderFields
     };
     Object.assign(order, commissionFields(order.total));
@@ -577,6 +592,9 @@ export async function createOrder(items, delivery, customerUid) {
       })),
       total: lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
       ...sellerEarningsFields(lines),
+      sellerConfirmations: Object.fromEntries(
+        [...new Set(lines.map((line) => line.sellerUid))].map((uid) => [uid, 'pending'])
+      ),
       ...orderFields
     };
     Object.assign(order, commissionFields(order.total));
@@ -610,6 +628,191 @@ export async function listSellerEarnings(sellerUid) {
     orders = snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
   }
   return orders.map((order) => sellerOrder(order, sellerUid)).filter(Boolean);
+}
+
+export async function confirmSellerOrder(orderId, sellerUid) {
+  const now = new Date().toISOString();
+  if (isDemo) {
+    const order = memory.orders.find((item) => item.id === orderId && !item.archived);
+    if (!order || !order.sellerUids?.includes(sellerUid)) return null;
+    if (order.status !== 'pending_seller') {
+      throw new Error('This order is no longer waiting for seller confirmation.');
+    }
+    const confirmations = { ...(order.sellerConfirmations || {}) };
+    if (confirmations[sellerUid] !== 'pending') {
+      throw new Error('Your confirmation for this order was already recorded.');
+    }
+    confirmations[sellerUid] = 'confirmed';
+    order.sellerConfirmations = confirmations;
+    if (order.sellerUids.every((uid) => confirmations[uid] === 'confirmed')) {
+      order.status = 'confirmed';
+      order.statusHistory = [...(order.statusHistory || []), { status: 'confirmed', updatedAt: now }];
+      order.updatedAt = now;
+    }
+    persistDemoStore();
+    return sellerOrder(order, sellerUid);
+  }
+  const document = db.collection('orders').doc(orderId);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(document);
+    if (!snapshot.exists || snapshot.data().archived) return null;
+    const order = { id: document.id, ...snapshot.data() };
+    if (!order.sellerUids?.includes(sellerUid)) return null;
+    if (order.status !== 'pending_seller') {
+      throw new Error('This order is no longer waiting for seller confirmation.');
+    }
+    const confirmations = { ...(order.sellerConfirmations || {}) };
+    if (confirmations[sellerUid] !== 'pending') {
+      throw new Error('Your confirmation for this order was already recorded.');
+    }
+    confirmations[sellerUid] = 'confirmed';
+    const allConfirmed = order.sellerUids.every((uid) => confirmations[uid] === 'confirmed');
+    const updates = { sellerConfirmations: confirmations };
+    if (allConfirmed) {
+      updates.status = 'confirmed';
+      updates.statusHistory = [...(order.statusHistory || []), { status: 'confirmed', updatedAt: now }];
+      updates.updatedAt = now;
+    }
+    transaction.update(document, updates);
+    return sellerOrder({ ...order, ...updates }, sellerUid);
+  });
+}
+
+export async function declineSellerOrder(orderId, sellerUid) {
+  const now = new Date().toISOString();
+  if (isDemo) {
+    const order = memory.orders.find((item) => item.id === orderId && !item.archived);
+    if (!order || !order.sellerUids?.includes(sellerUid)) return null;
+    if (order.status !== 'pending_seller') {
+      throw new Error('This order is no longer waiting for seller confirmation.');
+    }
+    const confirmations = { ...(order.sellerConfirmations || {}) };
+    if (confirmations[sellerUid] !== 'pending') {
+      throw new Error('Your confirmation for this order was already recorded.');
+    }
+    order.items.forEach((line) => {
+      const product = memory.products.find((item) => item.id === line.productId);
+      if (product) product.stock += line.quantity;
+    });
+    confirmations[sellerUid] = 'declined';
+    Object.assign(order, {
+      sellerConfirmations: confirmations,
+      status: 'cancelled',
+      paymentStatus: 'cancelled',
+      cancelledBy: sellerUid,
+      cancellationReason: 'seller_declined',
+      statusHistory: [...(order.statusHistory || []), { status: 'cancelled', updatedAt: now }],
+      updatedAt: now
+    });
+    persistDemoStore();
+    return sellerOrder(order, sellerUid);
+  }
+  const document = db.collection('orders').doc(orderId);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(document);
+    if (!snapshot.exists || snapshot.data().archived) return null;
+    const order = { id: document.id, ...snapshot.data() };
+    if (!order.sellerUids?.includes(sellerUid)) return null;
+    if (order.status !== 'pending_seller') {
+      throw new Error('This order is no longer waiting for seller confirmation.');
+    }
+    const confirmations = { ...(order.sellerConfirmations || {}) };
+    if (confirmations[sellerUid] !== 'pending') {
+      throw new Error('Your confirmation for this order was already recorded.');
+    }
+    const products = await Promise.all(order.items.map((item) =>
+      transaction.get(db.collection('products').doc(item.productId))
+    ));
+    products.forEach((product, index) => {
+      if (product.exists) {
+        transaction.update(product.ref, { stock: product.data().stock + order.items[index].quantity });
+      }
+    });
+    confirmations[sellerUid] = 'declined';
+    const updates = {
+      sellerConfirmations: confirmations,
+      status: 'cancelled',
+      paymentStatus: 'cancelled',
+      cancelledBy: sellerUid,
+      cancellationReason: 'seller_declined',
+      statusHistory: [...(order.statusHistory || []), { status: 'cancelled', updatedAt: now }],
+      updatedAt: now
+    };
+    transaction.update(document, updates);
+    return sellerOrder({ ...order, ...updates }, sellerUid);
+  });
+}
+
+function riderOrder(order, includeCourierToken = false) {
+  return {
+    id: order.id,
+    status: order.status,
+    paymentStatus: order.paymentStatus,
+    total: order.total,
+    deliveryDate: order.deliveryDate,
+    deliveryAddress: order.deliveryAddress,
+    deliveryLocation: order.deliveryLocation,
+    customerName: order.customerName || '',
+    customerPhone: order.customerPhone || '',
+    items: order.items.map(({ name, quantity }) => ({ name, quantity })),
+    courierLocation: order.courierLocation || null,
+    ...(includeCourierToken ? { courierToken: order.courierToken } : {})
+  };
+}
+
+export async function listRiderOrders(riderUid) {
+  let orders;
+  if (isDemo) {
+    orders = memory.orders.filter((order) => !order.archived &&
+      ['confirmed', 'preparing', 'out_for_delivery'].includes(order.status));
+  } else {
+    const snapshot = await db.collection('orders').where('archived', '==', false).get();
+    orders = snapshot.docs
+      .map((document) => ({ id: document.id, ...document.data() }))
+      .filter((order) => ['confirmed', 'preparing', 'out_for_delivery'].includes(order.status));
+  }
+  return {
+    available: orders
+      .filter((order) => !order.riderUid)
+      .map((order) => riderOrder(order)),
+    assigned: orders
+      .filter((order) => order.riderUid === riderUid)
+      .map((order) => riderOrder(order, true))
+  };
+}
+
+export async function claimDelivery(orderId, riderUid, riderName) {
+  const assignedAt = new Date().toISOString();
+  if (isDemo) {
+    const order = memory.orders.find((item) => item.id === orderId && !item.archived);
+    if (!order || !['confirmed', 'preparing'].includes(order.status)) return null;
+    if (order.riderUid && order.riderUid !== riderUid) return null;
+    Object.assign(order, { riderUid, riderName, riderAssignedAt: assignedAt });
+    persistDemoStore();
+    return { courierToken: order.courierToken };
+  }
+  const document = db.collection('orders').doc(orderId);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(document);
+    if (!snapshot.exists || snapshot.data().archived) return null;
+    const order = snapshot.data();
+    if (!['confirmed', 'preparing'].includes(order.status)) return null;
+    if (order.riderUid && order.riderUid !== riderUid) return null;
+    transaction.update(document, { riderUid, riderName, riderAssignedAt: assignedAt });
+    return { courierToken: order.courierToken };
+  });
+}
+
+export async function getOrderNotificationContext(orderId) {
+  let order;
+  if (isDemo) {
+    order = memory.orders.find((item) => item.id === orderId);
+  } else {
+    const snapshot = await db.collection('orders').doc(orderId).get();
+    order = snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null;
+  }
+  if (!order) return null;
+  return { customerUid: order.customerUid, trackingToken: order.trackingToken };
 }
 
 export async function listAdminPayouts() {
@@ -717,6 +920,16 @@ export async function getCourierOrder(courierToken) {
   return found ? trackedOrder(found.order) : null;
 }
 
+export async function getCourierOrderContext(courierToken) {
+  const found = await findOrderByToken('courierToken', courierToken);
+  if (!found) return null;
+  return {
+    orderId: found.order.id,
+    customerUid: found.order.customerUid,
+    trackingToken: found.order.trackingToken
+  };
+}
+
 export async function updateCourierLocation(courierToken, location) {
   if (!isPhilippinesLocation(location)) throw new Error('Courier location must be within the Philippines map area.');
   const found = await findOrderByToken('courierToken', courierToken);
@@ -764,7 +977,7 @@ export async function updateCourierStatus(courierToken, status, cashCollected) {
 export async function archiveOrder(id, customerUid) {
   if (isDemo) {
     const order = memory.orders.find((item) => item.id === id && item.customerUid === customerUid);
-    if (!order || order.archived || !['reserved', 'confirmed', 'preparing'].includes(order.status)) return false;
+    if (!order || order.archived || !['reserved', 'pending_seller', 'confirmed', 'preparing'].includes(order.status)) return false;
     order.items.forEach((line) => {
       const product = memory.products.find((item) => item.id === line.productId);
       if (product) product.stock += line.quantity;
@@ -779,7 +992,7 @@ export async function archiveOrder(id, customerUid) {
   return db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(document);
     if (!snapshot.exists || snapshot.data().customerUid !== customerUid ||
-        snapshot.data().archived || !['reserved', 'confirmed', 'preparing'].includes(snapshot.data().status)) return false;
+        snapshot.data().archived || !['reserved', 'pending_seller', 'confirmed', 'preparing'].includes(snapshot.data().status)) return false;
     const items = snapshot.data().items || [];
     const productSnapshots = await Promise.all(items.map((item) =>
       transaction.get(db.collection('products').doc(item.productId))
@@ -807,8 +1020,16 @@ export async function saveSubscription(subscription, userUid) {
     .doc(Buffer.from(subscription.endpoint).toString('base64url')).set(subscription);
 }
 
-export async function listSubscriptions() {
-  if (isDemo) return memory.subscriptions;
+export async function listSubscriptions(userUid = null) {
+  if (isDemo) {
+    return userUid
+      ? memory.subscriptions.filter((item) => item.userUid === userUid)
+      : memory.subscriptions;
+  }
+  if (userUid) {
+    const snapshot = await db.collection('pushSubscriptions').doc(userUid).collection('subscriptions').get();
+    return snapshot.docs.map((document) => document.data());
+  }
   const snapshot = await db.collectionGroup('subscriptions').get();
   return snapshot.docs.map((document) => document.data());
 }

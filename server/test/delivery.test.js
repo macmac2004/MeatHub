@@ -34,12 +34,16 @@ test('COD delivery tracking requires ordered statuses and records collected paym
   const order = await store.createOrder([{ productId: 'farmstead-beef', quantity: 1 }], {
     deliveryDate: date,
     deliveryAddress: '123 Test Street, Quezon City',
-    deliveryLocation: { lat: 14.5995, lng: 120.9842 }
+    deliveryLocation: { lat: 14.5995, lng: 120.9842 },
+    customerName: 'Test Buyer',
+    customerPhone: '09171234567'
   }, 'delivery-test-customer');
 
   assert.equal(order.paymentMethod, 'cod');
   assert.equal(order.paymentStatus, 'pending');
-  assert.equal(order.status, 'confirmed');
+  assert.equal(order.status, 'pending_seller');
+  assert.deepEqual(order.sellerConfirmations, { 'demo-seller': 'pending' });
+  assert.equal(order.customerPhone, '09171234567');
   assert.match(order.trackingToken, /^[A-Za-z0-9_-]{43}$/);
   assert.match(order.courierToken, /^[A-Za-z0-9_-]{43}$/);
   const restartedStore = await import(`../src/store.js?restart=${randomUUID()}`);
@@ -47,6 +51,23 @@ test('COD delivery tracking requires ordered statuses and records collected paym
   const originalCourierToken = order.courierToken;
   assert.equal((await store.listOrders('delivery-test-customer'))[0].courierToken, undefined);
   assert.equal((await store.getTrackedOrder(order.trackingToken)).deliveryAddress, order.deliveryAddress);
+  assert.equal((await store.getTrackedOrder(order.trackingToken)).customerPhone, '09171234567');
+
+  await assert.rejects(
+    store.updateCourierStatus(order.courierToken, 'preparing', false),
+    /Invalid delivery status/
+  );
+  const sellerOrder = await store.confirmSellerOrder(order.id, 'demo-seller');
+  assert.equal(sellerOrder.sellerConfirmation, 'confirmed');
+  assert.equal((await store.getTrackedOrder(order.trackingToken)).status, 'confirmed');
+
+  const riderBoard = await store.listRiderOrders('rider-test');
+  assert.equal(riderBoard.available.length, 1);
+  const claim = await store.claimDelivery(order.id, 'rider-test', 'Test Rider');
+  assert.equal(claim.courierToken, order.courierToken);
+  const claimedBoard = await store.listRiderOrders('rider-test');
+  assert.equal(claimedBoard.available.length, 0);
+  assert.equal(claimedBoard.assigned.length, 1);
 
   const renewedLink = await store.createCourierLink(order.id, 'delivery-test-customer');
   assert.notEqual(renewedLink.courierToken, originalCourierToken);

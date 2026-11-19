@@ -183,6 +183,8 @@ test('seller and buyer accounts are limited to their respective API actions', as
       deliveryDate,
       deliveryAddress: '123 Test Street, Quezon City',
       deliveryLocation: { lat: 14.5995, lng: 120.9842 },
+      customerName: 'Test Buyer',
+      customerPhone: '09171234567',
       paymentMethod: 'cod'
     })
   });
@@ -190,6 +192,7 @@ test('seller and buyer accounts are limited to their respective API actions', as
   const order = await orderResponse.json();
   assert.ok(order.courierToken);
   assert.equal(order.sellerEarnings, undefined);
+  assert.equal(order.status, 'pending_seller');
 
   const sellerEarningsResponse = await fetch(`${apiUrl}/api/seller/earnings`, {
     headers: demoHeaders('seller-1', 'seller')
@@ -200,6 +203,9 @@ test('seller and buyer accounts are limited to their respective API actions', as
   assert.equal(sellerEarnings[0].commissionAmount, 25);
   assert.equal(sellerEarnings[0].sellerNet, 225);
   assert.equal(sellerEarnings[0].paymentStatus, 'pending');
+  assert.equal(sellerEarnings[0].status, 'pending_seller');
+  assert.equal(sellerEarnings[0].sellerConfirmation, 'pending');
+  assert.equal(sellerEarnings[0].customerPhone, '09171234567');
   const secondSellerEarnings = await fetch(`${apiUrl}/api/seller/earnings`, {
     headers: demoHeaders('seller-2', 'seller')
   });
@@ -207,6 +213,52 @@ test('seller and buyer accounts are limited to their respective API actions', as
   assert.equal(secondSellerOrders.length, 1);
   assert.equal(secondSellerOrders[0].grossAmount, 200);
   assert.equal(secondSellerOrders[0].sellerNet, 180);
+
+  const riderProfile = await fetch(`${apiUrl}/api/profile`, {
+    headers: demoHeaders('rider-1', 'rider')
+  });
+  assert.deepEqual(await riderProfile.json(), { role: 'rider', isAdmin: false });
+
+  const buyerConfirmAttempt = await fetch(`${apiUrl}/api/seller/orders/${order.id}/confirm`, {
+    method: 'POST',
+    headers: demoHeaders('buyer-1', 'buyer')
+  });
+  assert.equal(buyerConfirmAttempt.status, 403);
+
+  for (const sellerUid of ['seller-1', 'seller-2']) {
+    const confirmation = await fetch(`${apiUrl}/api/seller/orders/${order.id}/confirm`, {
+      method: 'POST',
+      headers: demoHeaders(sellerUid, 'seller')
+    });
+    assert.equal(confirmation.status, 200);
+  }
+
+  const confirmedEarnings = await (await fetch(`${apiUrl}/api/seller/earnings`, {
+    headers: demoHeaders('seller-1', 'seller')
+  })).json();
+  assert.equal(confirmedEarnings[0].status, 'confirmed');
+  assert.equal(confirmedEarnings[0].sellerConfirmation, 'confirmed');
+
+  const riderBoard = await (await fetch(`${apiUrl}/api/rider/orders`, {
+    headers: demoHeaders('rider-1', 'rider')
+  })).json();
+  assert.equal(riderBoard.available.length, 1);
+  const claimedDelivery = await fetch(`${apiUrl}/api/rider/orders/${order.id}/claim`, {
+    method: 'POST',
+    headers: demoHeaders('rider-1', 'rider')
+  });
+  assert.equal(claimedDelivery.status, 200);
+  assert.equal((await claimedDelivery.json()).courierToken, order.courierToken);
+  const secondClaim = await fetch(`${apiUrl}/api/rider/orders/${order.id}/claim`, {
+    method: 'POST',
+    headers: demoHeaders('rider-2', 'rider')
+  });
+  assert.equal(secondClaim.status, 409);
+  const assignedBoard = await (await fetch(`${apiUrl}/api/rider/orders`, {
+    headers: demoHeaders('rider-1', 'rider')
+  })).json();
+  assert.equal(assignedBoard.available.length, 0);
+  assert.equal(assignedBoard.assigned.length, 1);
 
   const prematurePayout = await fetch(`${apiUrl}/api/admin/payouts/${order.id}`, {
     method: 'POST',
@@ -267,4 +319,44 @@ test('seller and buyer accounts are limited to their respective API actions', as
   const finalSecondSellerEarnings = await updatedSecondSellerEarnings.json();
   assert.equal(finalSecondSellerEarnings[0].payoutStatus, 'paid');
   assert.equal(finalSecondSellerEarnings[0].payoutReference, 'EWALLET-002');
+
+  const stockBeforeDecline = (await (await fetch(`${apiUrl}/api/products`)).json())
+    .find((item) => item.id === product.id).stock;
+  const declinedOrderResponse = await fetch(`${apiUrl}/api/orders`, {
+    method: 'POST',
+    headers: demoHeaders('buyer-1', 'buyer'),
+    body: JSON.stringify({
+      items: [{ productId: product.id, quantity: 1 }],
+      deliveryDate,
+      deliveryAddress: '456 Test Street, Quezon City',
+      deliveryLocation: { lat: 14.5995, lng: 120.9842 },
+      customerName: 'Test Buyer',
+      customerPhone: '09171234567',
+      paymentMethod: 'cod'
+    })
+  });
+  assert.equal(declinedOrderResponse.status, 201);
+  const declinedOrder = await declinedOrderResponse.json();
+  const declineResponse = await fetch(`${apiUrl}/api/seller/orders/${declinedOrder.id}/decline`, {
+    method: 'POST',
+    headers: demoHeaders('seller-1', 'seller')
+  });
+  assert.equal(declineResponse.status, 200);
+  assert.equal((await declineResponse.json()).status, 'cancelled');
+  const stockAfterDecline = (await (await fetch(`${apiUrl}/api/products`)).json())
+    .find((item) => item.id === product.id).stock;
+  assert.equal(stockAfterDecline, stockBeforeDecline);
+
+  const missingContact = await fetch(`${apiUrl}/api/orders`, {
+    method: 'POST',
+    headers: demoHeaders('buyer-1', 'buyer'),
+    body: JSON.stringify({
+      items: [{ productId: product.id, quantity: 1 }],
+      deliveryDate,
+      deliveryAddress: '456 Test Street, Quezon City',
+      deliveryLocation: { lat: 14.5995, lng: 120.9842 },
+      paymentMethod: 'cod'
+    })
+  });
+  assert.equal(missingContact.status, 400);
 });

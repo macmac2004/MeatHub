@@ -24,7 +24,7 @@ The backend verifies Firebase ID tokens and uses the Admin SDK, which bypasses F
 
 In Firebase mode, API write requests require a Firebase ID token. Product, order, and account-role data are stored in Firestore. Users can create listings and delivery orders after signing in. The included composite indexes support each customer's non-archived orders and each seller's active listings.
 
-New accounts choose either buyer or seller. Buyers get the marketplace and delivery features; sellers get a dashboard limited to their own listings. In Firebase mode, the API stores the account role in Firestore and enforces role-specific actions. Demo mode stores accounts locally and is not suitable for real users or production.
+New accounts choose buyer, seller, or rider. Buyers get the marketplace and delivery features; sellers get a dashboard limited to their own listings and incoming order confirmations; riders get a dashboard for claiming assigned deliveries. In Firebase mode, the API stores the account role in Firestore and enforces role-specific actions. Demo mode stores accounts locally and is not suitable for real users or production.
 
 For production builds, set `VITE_API_URL` in the client environment to the API's base URL (or serve the API behind the same-origin `/api` and `/ws` reverse-proxy routes). Configure `CLIENT_ORIGIN` on the API to match the browser origin.
 
@@ -42,10 +42,12 @@ Rate limits are in-memory per API instance, and the chat relay is in-memory: mes
 ## Included MVP behavior
 
 - Browse, search, and filter active listings; featured items are highlighted.
-- Place cash-on-delivery orders with a delivery address, date, and map-selected destination in the Philippines.
+- Place cash-on-delivery orders with a recipient name and phone number, delivery address, date, and map-selected destination in the Philippines.
 - Track order stages and the destination on a shareable tracking page.
 - Share a per-order courier link to update delivery stages and stream device GPS while the courier page is open. Courier links are revocable by creating a replacement; share them only with the assigned courier.
+- New COD orders start as `pending_seller` with stock reserved. Sellers confirm or decline them from a queue; every seller in a multi-seller order must confirm before delivery can start, and one decline cancels the order and restores stock.
 - Sellers have a dashboard for their active listings and stock, and can add, edit, or archive their products. Buyers see the marketplace and their deliveries instead.
+- Riders can claim confirmed deliveries from their dashboard and open the courier page to share GPS and update delivery status. The recipient's name and phone number are shown on the courier page.
 - Sellers can choose a JPEG, PNG, or WebP product photo (up to 5 MB) and upload it to Cloudinary.
 - Orders are created through the API and stock is checked/decremented.
 - Sellers see order totals, commission, net earnings, and payout status in their dashboard. Net earnings become available only after the courier confirms COD collection; an administrator records the payout reference after manually sending funds. This ledger does not collect or transfer money.

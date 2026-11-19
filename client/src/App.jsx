@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight, Banknote, Bell, Beef, Check, CircleUserRound, Clock3,
-  Heart, Leaf, MapPin, MessageCircle, Minus, Plus, Search, ShieldCheck,
+  Heart, Leaf, LocateFixed, MapPin, MessageCircle, Minus, Plus, Search, ShieldCheck,
   ShoppingBag, SlidersHorizontal, Sparkles, Sprout, Truck, X
 } from 'lucide-react';
 import {
@@ -21,6 +21,7 @@ const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY || '';
 const DeliveryMap = lazy(() => import('./DeliveryMap.jsx'));
 const categories = ['All cuts', 'Beef', 'Pork', 'Chicken', 'Lamb'];
 const deliveryStatusLabels = {
+  pending_seller: 'Waiting for seller',
   confirmed: 'Order confirmed',
   preparing: 'Preparing',
   out_for_delivery: 'Out for delivery',
@@ -131,7 +132,7 @@ function MarketApp() {
       const currentUser = JSON.parse(localStorage.getItem('meathub-demo-user') || 'null');
       const accounts = JSON.parse(localStorage.getItem('meathub-demo-accounts') || '[]');
       return Array.isArray(accounts) && accounts.some((account) => account.uid === currentUser?.uid)
-        ? { ...currentUser, role: currentUser.role === 'seller' ? 'seller' : 'buyer' }
+        ? { ...currentUser, role: ['buyer', 'seller', 'rider'].includes(currentUser.role) ? currentUser.role : 'buyer' }
         : null;
     } catch {
       return null;
@@ -140,9 +141,8 @@ function MarketApp() {
   const [accountRole, setAccountRole] = useState(() => {
     if (firebaseEnabled) return null;
     try {
-      return JSON.parse(localStorage.getItem('meathub-demo-user') || 'null')?.role === 'seller'
-        ? 'seller'
-        : 'buyer';
+      const savedRole = JSON.parse(localStorage.getItem('meathub-demo-user') || 'null')?.role;
+      return ['buyer', 'seller', 'rider'].includes(savedRole) ? savedRole : 'buyer';
     } catch {
       return 'buyer';
     }
@@ -157,6 +157,8 @@ function MarketApp() {
   const [deliveryDate, setDeliveryDate] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [deliveryLocation, setDeliveryLocation] = useState(null);
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
   const [ordersOpen, setOrdersOpen] = useState(false);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [customerOrders, setCustomerOrders] = useState([]);
@@ -165,6 +167,9 @@ function MarketApp() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [adminPayouts, setAdminPayouts] = useState([]);
   const [adminPayoutsLoading, setAdminPayoutsLoading] = useState(false);
+  const [riderOrders, setRiderOrders] = useState({ available: [], assigned: [] });
+  const [riderOrdersLoading, setRiderOrdersLoading] = useState(false);
+  const [sellerDecisionBusy, setSellerDecisionBusy] = useState({});
   const [payoutReferences, setPayoutReferences] = useState({});
   const [courierLinks, setCourierLinks] = useState({});
   const [orderConfirmation, setOrderConfirmation] = useState(null);
@@ -242,7 +247,7 @@ function MarketApp() {
     setAccountRoleError('');
     request('/api/profile', {}, user)
       .then(({ role, isAdmin: admin }) => {
-        if (role !== 'buyer' && role !== 'seller') throw new Error('Your account type is invalid.');
+        if (!['buyer', 'seller', 'rider'].includes(role)) throw new Error('Your account type is invalid.');
         if (!cancelled) {
           setAccountRole(role);
           setIsAdmin(admin === true);
@@ -267,7 +272,7 @@ function MarketApp() {
     }
     let cancelled = false;
     setSellerEarningsLoading(true);
-    request('/api/seller/earnings', {}, user)
+    const loadEarnings = () => request('/api/seller/earnings', {}, user)
       .then((earnings) => {
         if (!cancelled) setSellerEarnings(earnings);
       })
@@ -277,7 +282,37 @@ function MarketApp() {
       .finally(() => {
         if (!cancelled) setSellerEarningsLoading(false);
       });
-    return () => { cancelled = true; };
+    loadEarnings();
+    const interval = window.setInterval(loadEarnings, 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [accountRole, accountRoleReady, announce, user]);
+
+  useEffect(() => {
+    if (!user || !accountRoleReady || accountRole !== 'rider') {
+      setRiderOrders({ available: [], assigned: [] });
+      return undefined;
+    }
+    let cancelled = false;
+    setRiderOrdersLoading(true);
+    const loadRiderOrders = () => request('/api/rider/orders', {}, user)
+      .then((deliveries) => {
+        if (!cancelled) setRiderOrders(deliveries);
+      })
+      .catch((error) => {
+        if (!cancelled) announce(`Couldn't load deliveries: ${error.message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setRiderOrdersLoading(false);
+      });
+    loadRiderOrders();
+    const interval = window.setInterval(loadRiderOrders, 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [accountRole, accountRoleReady, announce, user]);
 
   useEffect(() => {
@@ -344,6 +379,10 @@ function MarketApp() {
   useEffect(() => {
     localStorage.setItem('meathub-favorites', JSON.stringify(favorites));
   }, [favorites]);
+
+  useEffect(() => {
+    if (user?.displayName) setCustomerName((current) => current || user.displayName);
+  }, [user]);
 
   useEffect(() => {
     const handleOnline = () => {
@@ -520,6 +559,8 @@ function MarketApp() {
   const paidOut = sellerEarnings
     .filter((order) => order.payoutStatus === 'paid')
     .reduce((total, order) => total + order.sellerNet, 0);
+  const pendingSellerOrders = sellerEarnings
+    .filter((order) => order.status === 'pending_seller' && order.sellerConfirmation === 'pending');
 
   async function loadOrders() {
     setOrdersLoading(true);
@@ -549,6 +590,36 @@ function MarketApp() {
       window.clearInterval(interval);
     };
   }, [accountRole, ordersOpen, user]);
+
+  async function decideSellerOrder(order, decision) {
+    setSellerDecisionBusy((current) => ({ ...current, [order.id]: true }));
+    try {
+      await request(`/api/seller/orders/${order.id}/${decision}`, { method: 'POST' }, user);
+      const earnings = await request('/api/seller/earnings', {}, user);
+      setSellerEarnings(earnings);
+      announce(decision === 'confirm'
+        ? 'Order confirmed. The buyer and rider can proceed.'
+        : 'Order declined. Stock was released and the buyer was notified.');
+    } catch (error) {
+      announce(`Couldn't update this order: ${error.message}`);
+    } finally {
+      setSellerDecisionBusy((current) => {
+        const next = { ...current };
+        delete next[order.id];
+        return next;
+      });
+    }
+  }
+
+  async function claimRiderOrder(order) {
+    try {
+      const { courierToken } = await request(`/api/rider/orders/${order.id}/claim`, { method: 'POST' }, user);
+      announce('Delivery claimed. Opening your rider page.');
+      window.location.assign(`/courier/${courierToken}`);
+    } catch (error) {
+      announce(`Couldn't claim this delivery: ${error.message}`);
+    }
+  }
 
   async function recordPayout(payout) {
     const key = `${payout.orderId}:${payout.sellerUid}`;
@@ -651,6 +722,8 @@ function MarketApp() {
       deliveryDate,
       deliveryAddress,
       deliveryLocation,
+      customerName: customerName.trim(),
+      customerPhone: customerPhone.trim(),
       paymentMethod: 'cod'
     };
     if (!online) {
@@ -683,7 +756,7 @@ function MarketApp() {
       setOrderConfirmation(saved);
       await loadProducts();
       if (pushEnabled && 'Notification' in window) {
-        new Notification('COD delivery confirmed', { body: 'Your delivery order is being prepared.' });
+        new Notification('COD delivery placed', { body: 'Waiting for the seller to confirm your order.' });
       }
     } catch (error) {
       announce(error.message);
@@ -831,6 +904,8 @@ function MarketApp() {
             <a className="nav-active" href="#admin-payouts">Seller payouts</a>
           ) : accountRole === 'seller' ? (
             <a className="nav-active" href="#seller-dashboard">Seller dashboard</a>
+          ) : accountRole === 'rider' ? (
+            <a className="nav-active" href="#rider-dashboard">Rider dashboard</a>
           ) : (
             <>
               <a className="nav-active" href="#shop">Shop meat</a>
@@ -964,6 +1039,48 @@ function MarketApp() {
               <div><small>Low stock (5 or less)</small><b>{lowStockListings}</b></div>
             </div>
             <div className="seller-listing-heading">
+              <h2>Orders to confirm</h2>
+            </div>
+            {pendingSellerOrders.length === 0 ? (
+              <div className="seller-empty">
+                <b>No orders waiting</b>
+                <span>New COD orders for your listings will appear here for confirmation.</span>
+              </div>
+            ) : (
+              <div className="earnings-list">
+                {pendingSellerOrders.map((order) => (
+                  <article className="earnings-card seller-order-card" key={order.id}>
+                    <div className="earnings-card-heading">
+                      <b>Order #{order.id.slice(0, 8)}</b>
+                      <span className="order-status-pill status-pending_seller">Needs confirmation</span>
+                    </div>
+                    <p className="earnings-items">
+                      {order.items.map((item) => `${item.name} × ${item.quantity}`).join(' · ')}
+                    </p>
+                    <div className="seller-order-meta">
+                      <span><Clock3 size={14} /> Deliver {new Date(`${order.deliveryDate}T00:00:00`).toLocaleDateString()}</span>
+                      <span><MapPin size={14} /> {order.deliveryAddress}</span>
+                      {(order.customerName || order.customerPhone) && (
+                        <span><CircleUserRound size={14} /> {order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ''}</span>
+                      )}
+                    </div>
+                    <div className="earnings-breakdown">
+                      <span>Order share <b>{money(order.grossAmount)}</b></span>
+                      <span>Your net <b>{money(order.sellerNet)}</b></span>
+                    </div>
+                    <div className="seller-order-actions">
+                      <button className="primary-button" disabled={sellerDecisionBusy[order.id]} onClick={() => decideSellerOrder(order, 'confirm')}>
+                        <Check size={15} /> Confirm order
+                      </button>
+                      <button className="outline-button" disabled={sellerDecisionBusy[order.id]} onClick={() => decideSellerOrder(order, 'decline')}>
+                        Decline
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+            <div className="seller-listing-heading">
               <h2>Your earnings</h2>
             </div>
             <div className="seller-summary earnings-summary">
@@ -1035,6 +1152,85 @@ function MarketApp() {
                       <button onClick={() => startEditListing(product)}>Edit</button>
                       <button onClick={() => archiveListing(product)}>Archive</button>
                     </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : accountRole === 'rider' ? (
+          <section className="seller-dashboard" id="rider-dashboard" aria-labelledby="rider-dashboard-title">
+            <div className="seller-dashboard-heading">
+              <div>
+                <div className="eyebrow section-eyebrow">MEATHUB DELIVERIES</div>
+                <h1 id="rider-dashboard-title">Rider dashboard</h1>
+                <p>Claim a delivery, then open its rider page to share GPS and update the status.</p>
+              </div>
+            </div>
+            <div className="seller-summary">
+              <div><small>Available deliveries</small><b>{riderOrders.available.length}</b></div>
+              <div><small>Your active deliveries</small><b>{riderOrders.assigned.length}</b></div>
+              <div><small>COD to collect</small><b>{money(riderOrders.assigned.reduce((sum, order) => sum + Number(order.total || 0), 0))}</b></div>
+            </div>
+            <div className="seller-listing-heading">
+              <h2>Available deliveries</h2>
+            </div>
+            {riderOrdersLoading ? (
+              <div className="seller-empty">Loading deliveries…</div>
+            ) : riderOrders.available.length === 0 ? (
+              <div className="seller-empty">
+                <b>No unassigned deliveries</b>
+                <span>Confirmed COD orders will appear here for any rider to claim.</span>
+              </div>
+            ) : (
+              <div className="earnings-list">
+                {riderOrders.available.map((order) => (
+                  <article className="earnings-card rider-order-card" key={order.id}>
+                    <div className="earnings-card-heading">
+                      <b>Delivery #{order.id.slice(0, 8)}</b>
+                      <span className={`order-status-pill status-${order.status}`}>{deliveryStatusLabels[order.status] || order.status}</span>
+                    </div>
+                    <p className="earnings-items">{order.items.map((item) => `${item.name} × ${item.quantity}`).join(' · ')}</p>
+                    <div className="seller-order-meta">
+                      <span><MapPin size={14} /> {order.deliveryAddress}</span>
+                      <span><Clock3 size={14} /> {new Date(`${order.deliveryDate}T00:00:00`).toLocaleDateString()} · COD {money(order.total)}</span>
+                      {(order.customerName || order.customerPhone) && (
+                        <span><CircleUserRound size={14} /> {order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ''}</span>
+                      )}
+                    </div>
+                    <button className="primary-button" onClick={() => claimRiderOrder(order)}>
+                      <Truck size={15} /> Accept delivery
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+            <div className="seller-listing-heading">
+              <h2>Your active deliveries</h2>
+            </div>
+            {riderOrders.assigned.length === 0 ? (
+              <div className="seller-empty">
+                <b>No claimed deliveries</b>
+                <span>Deliveries you accept will stay here until they are completed.</span>
+              </div>
+            ) : (
+              <div className="earnings-list">
+                {riderOrders.assigned.map((order) => (
+                  <article className="earnings-card rider-order-card" key={order.id}>
+                    <div className="earnings-card-heading">
+                      <b>Delivery #{order.id.slice(0, 8)}</b>
+                      <span className={`order-status-pill status-${order.status}`}>{deliveryStatusLabels[order.status] || order.status}</span>
+                    </div>
+                    <p className="earnings-items">{order.items.map((item) => `${item.name} × ${item.quantity}`).join(' · ')}</p>
+                    <div className="seller-order-meta">
+                      <span><MapPin size={14} /> {order.deliveryAddress}</span>
+                      <span><Clock3 size={14} /> {new Date(`${order.deliveryDate}T00:00:00`).toLocaleDateString()} · COD {money(order.total)}</span>
+                      {(order.customerName || order.customerPhone) && (
+                        <span><CircleUserRound size={14} /> {order.customerName}{order.customerPhone ? ` · ${order.customerPhone}` : ''}</span>
+                      )}
+                    </div>
+                    <a className="outline-button" href={`/courier/${order.courierToken}`}>
+                      <LocateFixed size={15} /> Open rider page
+                    </a>
                   </article>
                 ))}
               </div>
@@ -1181,6 +1377,12 @@ function MarketApp() {
                 <form className="checkout" onSubmit={placeDeliveryOrder}>
                   <label htmlFor="delivery-date">Choose your delivery day</label>
                   <input id="delivery-date" type="date" min={localDateString()} required value={deliveryDate} onChange={(event) => setDeliveryDate(event.target.value)} />
+                  <label htmlFor="contact-name">Recipient name</label>
+                  <input id="contact-name" type="text" maxLength="100" required value={customerName}
+                    onChange={(event) => setCustomerName(event.target.value)} placeholder="Who will receive the order?" />
+                  <label htmlFor="contact-phone">Contact number for the rider</label>
+                  <input id="contact-phone" type="tel" inputMode="tel" maxLength="20" required value={customerPhone}
+                    onChange={(event) => setCustomerPhone(event.target.value)} placeholder="09xx xxx xxxx" />
                   <label htmlFor="delivery-address">Delivery address</label>
                   <textarea id="delivery-address" rows="2" maxLength="500" required value={deliveryAddress}
                     onChange={(event) => setDeliveryAddress(event.target.value)} placeholder="House number, street, barangay, city or municipality" />
@@ -1264,10 +1466,10 @@ function MarketApp() {
         <div className="overlay modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setOrderConfirmation(null)}>
           <section className="delivery-confirmation">
             <div className="panel-heading">
-              <div><small>COD ORDER CONFIRMED</small><h2>Your delivery is on its way.</h2></div>
+              <div><small>COD ORDER PLACED</small><h2>Waiting for the seller.</h2></div>
               <button className="icon-button" onClick={() => setOrderConfirmation(null)} aria-label="Close confirmation"><X /></button>
             </div>
-            <p className="modal-intro">Order #{orderConfirmation.id.slice(0, 8)} · {money(orderConfirmation.total)} · Pay cash on arrival.</p>
+            <p className="modal-intro">Order #{orderConfirmation.id.slice(0, 8)} · {money(orderConfirmation.total)} · Pay cash on arrival. The seller must confirm before a rider can start.</p>
             <div className="delivery-map-picker"><Suspense fallback={<div className="map-loading">Loading Philippines map…</div>}>
               <DeliveryMap destination={orderConfirmation.deliveryLocation} />
             </Suspense></div>

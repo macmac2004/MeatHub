@@ -287,6 +287,12 @@ h1, h2, h3, p { margin-top: 0; }
 .earnings-breakdown span { display: flex; flex-direction: column; gap: 5px; color: #858b81; font-size: 8px; }
 .earnings-breakdown b { color: #435b45; font-size: 10px; }
 .payout-status { display: inline-flex; padding: 5px 7px; border-radius: 12px; background: #fff0e5; color: #9c573a; font-size: 8px; font-weight: 600; white-space: nowrap; }
+.seller-order-meta { display: flex; flex-direction: column; gap: 5px; margin: 9px 0; color: #758073; font-size: 9px; }
+.seller-order-meta span { display: flex; align-items: flex-start; gap: 6px; line-height: 1.45; }
+.seller-order-meta svg { flex: none; margin-top: 1px; }
+.seller-order-actions { display: flex; gap: 8px; margin-top: 12px; }
+.seller-order-actions .primary-button, .seller-order-actions .outline-button { min-height: 36px; padding: 0 14px; font-size: 9px; }
+.rider-order-card .primary-button, .rider-order-card .outline-button { justify-content: center; width: 100%; margin-top: 12px; min-height: 38px; font-size: 9px; }
 .payout-complete { background: #e4f2e7; color: #3e7245; }
 .payout-reference { display: block; margin-top: 7px; color: #858b81; font-size: 8px; overflow-wrap: anywhere; }
 .payout-record-form { display: flex; align-items: end; gap: 9px; margin-top: 10px; }
@@ -364,6 +370,7 @@ h1, h2, h3, p { margin-top: 0; }
 .buyer-live-map-note { display: flex; align-items: center; gap: 6px; padding: 8px 10px; color: #69836b; font-size: 8px; }
 .buyer-live-map .map-loading { min-height: 190px; }
 .order-status-pill { display: inline-flex; padding: 5px 7px; border-radius: 12px; background: #edf2e8; color: #456346; font-size: 8px; font-weight: 600; white-space: nowrap; }
+.status-pending_seller { background: #fff5dd; color: #8a6526; }
 .status-out_for_delivery { background: #fff0e5; color: #9c573a; }
 .status-delivered { background: #e4f2e7; color: #3e7245; }
 .status-cancelled { background: #f7e8e5; color: #934a40; }
@@ -385,7 +392,7 @@ h1, h2, h3, p { margin-top: 0; }
 .delivery-order-summary > div { display: flex; flex-direction: column; gap: 5px; }
 .delivery-order-summary small { color: #8b9187; font-size: 7px; font-weight: 700; letter-spacing: .1em; }
 .delivery-order-summary b { color: #425645; font-size: 10px; }
-.delivery-progress { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 0 0 20px; padding: 0; list-style: none; }
+.delivery-progress { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; margin: 0 0 20px; padding: 0; list-style: none; }
 .delivery-progress-step { display: flex; align-items: center; flex-direction: column; gap: 6px; position: relative; color: #9ca196; text-align: center; }
 .delivery-progress-step > span { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid #d5dbd1; border-radius: 50%; background: #f6f6f1; font-size: 9px; }
 .delivery-progress-step b { font-size: 8px; font-weight: 500; }
@@ -408,6 +415,11 @@ h1, h2, h3, p { margin-top: 0; }
 .courier-destination > span { display: flex; flex-direction: column; gap: 5px; }
 .courier-destination small { color: #9c684e; font-size: 7px; font-weight: 700; letter-spacing: .1em; }
 .courier-destination b { font-size: 11px; line-height: 1.5; }
+.courier-contact { display: flex; align-items: center; gap: 10px; margin: -8px 0 18px; padding: 10px 12px; background: #f4f2ea; color: #4c614e; }
+.courier-contact span { display: flex; flex-direction: column; gap: 3px; }
+.courier-contact small { color: #9c684e; font-size: 7px; font-weight: 700; letter-spacing: .1em; }
+.courier-contact b { font-size: 11px; }
+.courier-contact a { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: #456346; font-size: 10px; font-weight: 600; text-decoration: none; }
 .courier-actions { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin-top: 15px; }
 .courier-actions .outline-button { justify-content: center; min-height: 40px; }
 .delivery-success { display: flex; align-items: center; gap: 8px; padding: 12px; background: #e8f1e5; color: #3c6742; font-size: 10px; }
