@@ -1,4 +1,4 @@
-const CACHE_NAME = 'meathub-shell-v2';
+const CACHE_NAME = 'meathub-shell-v3';
 const APP_SHELL = ['/', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png'];
 const QUEUE_DB = 'meathub';
 const QUEUE_STORE = 'orderQueue';
@@ -71,8 +71,8 @@ self.addEventListener('push', (event) => {
   }
   event.waitUntil(self.registration.showNotification(payload.title, {
     body: payload.body,
-    icon: '/icon.svg',
-    badge: '/icon.svg',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
     tag: payload.tag || 'meathub',
     data: { url: payload.url || '/' }
   }));

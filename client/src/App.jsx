@@ -166,6 +166,8 @@ function MarketApp() {
   const [pushPermission, setPushPermission] = useState(() => ('Notification' in window ? Notification.permission : 'unsupported'));
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
+  const [pushServerKey, setPushServerKey] = useState('');
+  const pushApplicationKey = pushServerKey || VAPID_PUBLIC_KEY;
   const [deliveryDate, setDeliveryDate] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [deliveryLocation, setDeliveryLocation] = useState(null);
@@ -359,29 +361,32 @@ function MarketApp() {
   useEffect(() => {
     if (!authReady || !user || !accountRoleReady || accountRoleError) return;
     loadProducts();
-    request('/api/health').then((health) => setApiPushReady(health.pushEnabled)).catch(() => {});
+    request('/api/health').then((health) => {
+      setApiPushReady(health.pushEnabled);
+      setPushServerKey(typeof health.pushPublicKey === 'string' ? health.pushPublicKey : '');
+    }).catch(() => {});
   }, [accountRole, accountRoleError, accountRoleReady, authReady, loadProducts, user]);
 
   useEffect(() => {
     if (!['buyer', 'seller'].includes(accountRole) || !('Notification' in window) || Notification.permission !== 'granted') return undefined;
     setPushEnabled(true);
-    if (!apiPushReady || !VAPID_PUBLIC_KEY || !('serviceWorker' in navigator)) return undefined;
+    if (!apiPushReady || !pushApplicationKey || !('serviceWorker' in navigator)) return undefined;
     if (firebaseEnabled && !user) return undefined;
     let cancelled = false;
     (async () => {
       try {
         const registration = await navigator.serviceWorker.ready;
-        const existing = await registration.pushManager.getSubscription();
-        if (!existing || cancelled) return;
+        const subscription = await ensurePushSubscription(registration);
+        if (!subscription || cancelled) return;
         await request('/api/push/subscribe', {
-          method: 'POST', body: JSON.stringify(existing)
+          method: 'POST', body: JSON.stringify(subscription)
         }, user);
       } catch (error) {
         console.warn('Could not refresh the push subscription:', error);
       }
     })();
     return () => { cancelled = true; };
-  }, [accountRole, apiPushReady, user]);
+  }, [accountRole, apiPushReady, pushApplicationKey, user]);
 
   useEffect(() => {
     if (!authReady || user) return;
@@ -930,6 +935,21 @@ function MarketApp() {
     }
   }
 
+  async function ensurePushSubscription(registration) {
+    const applicationServerKey = decodeBase64Key(pushApplicationKey);
+    let subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      const currentKey = subscription.options?.applicationServerKey;
+      if (currentKey && encodeBase64Key(currentKey) !== encodeBase64Key(applicationServerKey)) {
+        // A subscription from an older VAPID key is rejected by the push service, so start over.
+        await subscription.unsubscribe();
+        subscription = null;
+      }
+    }
+    return subscription
+      || registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
+  }
+
   async function refreshPushState() {
     setPushPermission('Notification' in window ? Notification.permission : 'unsupported');
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -961,8 +981,8 @@ function MarketApp() {
       return;
     }
     setPushEnabled(true);
-    if (!apiPushReady || !VAPID_PUBLIC_KEY) {
-      announce('On-device notifications are on. Push while the app is closed needs VAPID keys on the server and VITE_VAPID_PUBLIC_KEY in the client.');
+    if (!apiPushReady || !pushApplicationKey) {
+      announce('On-device notifications are on. Push while the app is closed needs VAPID keys on the server.');
       return;
     }
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -975,11 +995,7 @@ function MarketApp() {
     }
     try {
       const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.getSubscription()
-        || await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: decodeBase64Key(VAPID_PUBLIC_KEY)
-        });
+      const subscription = await ensurePushSubscription(registration);
       await request('/api/push/subscribe', {
         method: 'POST', body: JSON.stringify(subscription)
       }, user);
@@ -1853,6 +1869,11 @@ function decodeBase64Key(value) {
   const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
   const raw = window.atob(base64);
   return Uint8Array.from(raw, (character) => character.charCodeAt(0));
+}
+
+function encodeBase64Key(bytes) {
+  const raw = Array.from(new Uint8Array(bytes), (byte) => String.fromCharCode(byte)).join('');
+  return window.btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 export default App;

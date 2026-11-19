@@ -189,7 +189,12 @@ function missingDeliveryLinkMessage(label) {
 }
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', mode: demoMode ? 'demo' : 'firebase', pushEnabled: hasPushKeys });
+  res.json({
+    status: 'ok',
+    mode: demoMode ? 'demo' : 'firebase',
+    pushEnabled: hasPushKeys,
+    pushPublicKey: hasPushKeys ? process.env.VAPID_PUBLIC_KEY : null
+  });
 });
 
 app.get('/api/profile', authenticate, async (req, res, next) => {
@@ -681,9 +686,12 @@ async function sendPushToSubscribers(payload, userUid = null) {
     try {
       await webpush.sendNotification(subscription, JSON.stringify(payload));
     } catch (error) {
-      if (error.statusCode !== 404 && error.statusCode !== 410) {
-        console.error('Could not send push notification:', error.message);
+      if ([403, 404, 410].includes(error.statusCode) && userUid) {
+        await deleteSubscription(subscription.endpoint, userUid).catch((cleanupError) =>
+          console.error('Could not remove a stale push subscription:', cleanupError.message));
+        return;
       }
+      console.error('Could not send push notification:', error.message);
     }
   }));
 }
