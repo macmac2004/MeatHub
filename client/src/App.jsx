@@ -126,6 +126,11 @@ function MarketApp() {
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [chatText, setChatText] = useState('');
+  const [orderChat, setOrderChat] = useState(null);
+  const [orderChatMessages, setOrderChatMessages] = useState([]);
+  const [orderChatText, setOrderChatText] = useState('');
+  const [orderChatBusy, setOrderChatBusy] = useState(false);
+  const [orderChatError, setOrderChatError] = useState('');
   const [user, setUser] = useState(() => {
     if (firebaseEnabled) return null;
     try {
@@ -152,6 +157,7 @@ function MarketApp() {
   const [authReady, setAuthReady] = useState(!firebaseEnabled);
   const [notice, setNotice] = useState('');
   const [online, setOnline] = useState(navigator.onLine);
+  const [queuedCount, setQueuedCount] = useState(0);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [apiPushReady, setApiPushReady] = useState(false);
   const [deliveryDate, setDeliveryDate] = useState('');
@@ -177,6 +183,7 @@ function MarketApp() {
     try { return JSON.parse(localStorage.getItem('meathub-favorites') || '[]'); } catch { return []; }
   });
   const chatRef = useRef(null);
+  const orderChatListRef = useRef(null);
   const searchRef = useRef(null);
   const syncRef = useRef(null);
 
@@ -411,6 +418,19 @@ function MarketApp() {
     if (online && user && accountRole === 'buyer') syncQueuedOrders();
   }, [accountRole, online, user]);
 
+  async function refreshQueuedCount() {
+    try {
+      setQueuedCount((await listQueuedOrders()).length);
+    } catch {
+      // The offline queue may be unavailable in private browsing; the pill just stays hidden.
+    }
+  }
+
+  useEffect(() => {
+    if (accountRole === 'buyer' && user) refreshQueuedCount();
+    else setQueuedCount(0);
+  }, [accountRole, online, user]);
+
   async function syncQueuedOrders() {
     if (syncRef.current) return syncRef.current;
     const run = (async () => {
@@ -479,6 +499,7 @@ function MarketApp() {
       return await run;
     } finally {
       syncRef.current = null;
+      refreshQueuedCount();
     }
   }
 
@@ -525,6 +546,60 @@ function MarketApp() {
       chatRef.current = null;
     };
   }, [accountRole, chatOpen, announce, user]);
+
+  useEffect(() => {
+    if (!orderChat || !user) return undefined;
+    let cancelled = false;
+    const loadMessages = async () => {
+      try {
+        const messages = await request(`/api/orders/${orderChat.id}/messages`, {}, user);
+        if (!cancelled) {
+          setOrderChatMessages(messages);
+          setOrderChatError('');
+        }
+      } catch (error) {
+        if (!cancelled) setOrderChatError(error.message);
+      }
+    };
+    loadMessages();
+    const interval = window.setInterval(loadMessages, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [orderChat, user]);
+
+  useEffect(() => {
+    if (orderChatListRef.current) {
+      orderChatListRef.current.scrollTop = orderChatListRef.current.scrollHeight;
+    }
+  }, [orderChatMessages, orderChat]);
+
+  function openOrderChat(order) {
+    setOrderChat({ id: order.id, title: `Order #${order.id.slice(0, 8)}` });
+    setOrderChatMessages([]);
+    setOrderChatText('');
+    setOrderChatError('');
+  }
+
+  async function sendOrderChatMessage(event) {
+    event.preventDefault();
+    const text = orderChatText.trim();
+    if (!text || !orderChat) return;
+    setOrderChatBusy(true);
+    try {
+      const message = await request(`/api/orders/${orderChat.id}/messages`, {
+        method: 'POST', body: JSON.stringify({ text })
+      }, user);
+      setOrderChatText('');
+      setOrderChatMessages((current) => [...current, message].slice(-100));
+      setOrderChatError('');
+    } catch (error) {
+      setOrderChatError(error.message);
+    } finally {
+      setOrderChatBusy(false);
+    }
+  }
 
   const filteredProducts = useMemo(() => products.filter((product) => {
     const matchesCategory = activeCategory === 'All cuts' || product.category === activeCategory;
@@ -1077,6 +1152,9 @@ function MarketApp() {
                       <button className="outline-button" disabled={sellerDecisionBusy[order.id]} onClick={() => decideSellerOrder(order, 'decline')}>
                         Decline
                       </button>
+                      <button className="outline-button" onClick={() => openOrderChat(order)}>
+                        <MessageCircle size={14} /> Message buyer
+                      </button>
                     </div>
                   </article>
                 ))}
@@ -1122,6 +1200,13 @@ function MarketApp() {
                           ? 'COD collected · waiting for manual seller payout'
                           : 'Net amount is an estimate until the courier collects COD'}
                     </small>
+                    {order.status !== 'cancelled' && (
+                      <div className="seller-order-actions">
+                        <button className="outline-button" onClick={() => openOrderChat(order)}>
+                          <MessageCircle size={14} /> Message buyer
+                        </button>
+                      </div>
+                    )}
                   </article>
                 ))}
               </div>
@@ -1361,7 +1446,17 @@ function MarketApp() {
       )}
 
       {notice && <div className="toast" role="status"><Check size={16} />{notice}</div>}
-      {!online && <div className="offline-pill"><span /> Offline mode · {accountRole === 'seller' ? 'saved listings' : 'saved market'}</div>}
+      {(!online || queuedCount > 0) && (
+        <div className={`offline-pill${online ? ' queued' : ''}`} role="status">
+          <span />
+          {online
+            ? `${queuedCount} saved ${queuedCount === 1 ? 'delivery' : 'deliveries'} waiting to sync`
+            : `Offline mode · ${accountRole === 'seller' ? 'saved listings' : 'saved market'}`}
+          {online && (
+            <button type="button" className="offline-retry" onClick={() => syncQueuedOrders()}>Retry now</button>
+          )}
+        </div>
+      )}
 
       {accountRole === 'buyer' && cartOpen && (
         <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && setCartOpen(false)}>
@@ -1451,6 +1546,11 @@ function MarketApp() {
                     {!['delivered', 'cancelled'].includes(order.status) && (
                       <button className="text-button" onClick={() => createCourierLink(order)}>Create courier link</button>
                     )}
+                    {order.status !== 'cancelled' && (
+                      <button className="text-button" onClick={() => openOrderChat(order)}>
+                        <MessageCircle size={14} /> Message seller
+                      </button>
+                    )}
                   </div>
                   {courierLinks[order.id] && (
                     <label className="courier-link-field">Share this link with your courier
@@ -1481,6 +1581,46 @@ function MarketApp() {
               <a className="outline-button" href={`/courier/${orderConfirmation.courierToken}`} target="_blank" rel="noreferrer">Share courier GPS link <Truck size={16} /></a>
             </div>
             <small className="commission-note">The courier link grants live-location and status access. Share it only with your assigned courier.</small>
+          </section>
+        </div>
+      )}
+
+      {orderChat && (
+        <div className="overlay modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && setOrderChat(null)}>
+          <section className="delivery-confirmation order-chat" aria-label={`Chat for ${orderChat.title}`}>
+            <div className="panel-heading">
+              <div><small>ORDER CHAT</small><h2>{orderChat.title}</h2></div>
+              <button className="icon-button" onClick={() => setOrderChat(null)} aria-label="Close chat"><X /></button>
+            </div>
+            <p className="modal-intro">Only the buyer and the sellers of this order can read these messages.</p>
+            <div className="order-chat-list" ref={orderChatListRef} role="log" aria-live="polite">
+              {orderChatMessages.length === 0 && (
+                <p className="order-chat-empty">No messages yet. Confirm the delivery details or ask a question here.</p>
+              )}
+              {orderChatMessages.map((message) => (
+                <div
+                  className={`order-chat-message${message.authorUid === user?.uid ? ' own' : ''}${message.authorRole === 'system' ? ' system' : ''}`}
+                  key={message.id}
+                >
+                  <small>{message.authorName} · {new Date(message.createdAt).toLocaleTimeString()}</small>
+                  <p>{message.text}</p>
+                </div>
+              ))}
+            </div>
+            {orderChatError && <p className="delivery-error" role="status">{orderChatError}</p>}
+            <form className="order-chat-form" onSubmit={sendOrderChatMessage}>
+              <input
+                value={orderChatText}
+                onChange={(event) => setOrderChatText(event.target.value)}
+                maxLength={500}
+                placeholder="Write a message…"
+                aria-label="Order message"
+              />
+              <button className="primary-button" type="submit" disabled={orderChatBusy || !orderChatText.trim()}>
+                {orderChatBusy ? 'Sending…' : 'Send'}
+              </button>
+            </form>
+            <small className="order-chat-note">New messages appear within a few seconds while this box is open.</small>
           </section>
         </div>
       )}

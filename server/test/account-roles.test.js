@@ -194,6 +194,65 @@ test('seller and buyer accounts are limited to their respective API actions', as
   assert.equal(order.sellerEarnings, undefined);
   assert.equal(order.status, 'pending_seller');
 
+  const buyerMessage = await fetch(`${apiUrl}/api/orders/${order.id}/messages`, {
+    method: 'POST',
+    headers: demoHeaders('buyer-1', 'buyer'),
+    body: JSON.stringify({ text: 'Please pack the beef separately.' })
+  });
+  assert.equal(buyerMessage.status, 201);
+  const sentMessage = await buyerMessage.json();
+  assert.equal(sentMessage.authorRole, 'buyer');
+  assert.equal(sentMessage.authorName, 'Test Buyer');
+  assert.equal(sentMessage.text, 'Please pack the beef separately.');
+
+  for (const sellerUid of ['seller-1', 'seller-2']) {
+    const sellerMessages = await fetch(`${apiUrl}/api/orders/${order.id}/messages`, {
+      headers: demoHeaders(sellerUid, 'seller')
+    });
+    assert.equal(sellerMessages.status, 200);
+    assert.equal((await sellerMessages.json()).length, 1);
+  }
+
+  const outsiderChat = await fetch(`${apiUrl}/api/orders/${order.id}/messages`, {
+    headers: demoHeaders('buyer-2', 'buyer')
+  });
+  assert.equal(outsiderChat.status, 404);
+
+  const sellerReply = await fetch(`${apiUrl}/api/orders/${order.id}/messages`, {
+    method: 'POST',
+    headers: demoHeaders('seller-1', 'seller'),
+    body: JSON.stringify({ text: 'Noted, we will wrap it separately.' })
+  });
+  assert.equal(sellerReply.status, 201);
+  assert.equal((await sellerReply.json()).authorRole, 'seller');
+
+  const buyerChat = await (await fetch(`${apiUrl}/api/orders/${order.id}/messages`, {
+    headers: demoHeaders('buyer-1', 'buyer')
+  })).json();
+  assert.equal(buyerChat.length, 2);
+  assert.equal(buyerChat[1].text, 'Noted, we will wrap it separately.');
+
+  const outsiderMessage = await fetch(`${apiUrl}/api/orders/${order.id}/messages`, {
+    method: 'POST',
+    headers: demoHeaders('buyer-2', 'buyer'),
+    body: JSON.stringify({ text: 'Can I join?' })
+  });
+  assert.equal(outsiderMessage.status, 404);
+
+  const emptyMessage = await fetch(`${apiUrl}/api/orders/${order.id}/messages`, {
+    method: 'POST',
+    headers: demoHeaders('buyer-1', 'buyer'),
+    body: JSON.stringify({ text: '   ' })
+  });
+  assert.equal(emptyMessage.status, 400);
+
+  const longMessage = await fetch(`${apiUrl}/api/orders/${order.id}/messages`, {
+    method: 'POST',
+    headers: demoHeaders('buyer-1', 'buyer'),
+    body: JSON.stringify({ text: 'x'.repeat(501) })
+  });
+  assert.equal(longMessage.status, 400);
+
   const sellerEarningsResponse = await fetch(`${apiUrl}/api/seller/earnings`, {
     headers: demoHeaders('seller-1', 'seller')
   });

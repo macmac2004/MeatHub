@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Beef, Heart, ShieldCheck, Sprout, Truck } from 'lucide-react';
 import { createUserWithEmailAndPassword, signInWithPopup, signOut, updateProfile } from '@firebase/auth';
-import { auth, firebaseEnabled, googleProvider } from './firebase.js';
+import { auth, firebaseEnabled, friendlyAuthError, googleProvider } from './firebase.js';
 import { createDemoSalt, hashDemoPassword } from './demoAuth.js';
 import { clearPendingAccountRole, rememberPendingAccountRole, saveAccountRole } from './accountRole.js';
 
@@ -70,9 +70,7 @@ export default function SignupPage() {
       }
       redirectToSignIn(email.trim().toLowerCase());
     } catch (signInError) {
-      setError(signInError.code === 'auth/popup-closed-by-user'
-        ? 'The sign-up window was closed. Please try again.'
-        : signInError.message);
+      setError(friendlyAuthError(signInError));
     } finally {
       setBusy(false);
     }
@@ -86,9 +84,7 @@ export default function SignupPage() {
       const accountEmail = credential.user.email || '';
       await finishFirebaseSignup(credential.user, accountEmail);
     } catch (signInError) {
-      setError(signInError.code === 'auth/popup-closed-by-user'
-        ? 'The sign-up window was closed. Please try again.'
-        : signInError.message);
+      setError(friendlyAuthError(signInError));
     } finally {
       setBusy(false);
     }

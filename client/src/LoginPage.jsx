@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Beef, Heart, ShieldCheck, Sprout, Truck } from 'lucide-react';
 import { sendPasswordResetEmail, signInWithPopup, signInWithEmailAndPassword } from '@firebase/auth';
-import { auth, firebaseEnabled, googleProvider } from './firebase.js';
+import { auth, firebaseEnabled, friendlyAuthError, googleProvider } from './firebase.js';
 import { createDemoSalt, hashDemoPassword } from './demoAuth.js';
 import { applyPendingAccountRole } from './accountRole.js';
 
@@ -46,9 +46,7 @@ export default function LoginPage() {
       }
       window.location.assign('/');
     } catch (loginError) {
-      setError(loginError.code === 'auth/invalid-credential'
-        ? 'The email or password is incorrect.'
-        : loginError.message);
+      setError(friendlyAuthError(loginError));
     } finally {
       setBusy(false);
     }
@@ -66,9 +64,7 @@ export default function LoginPage() {
       await applyPendingAccountRole(credential.user);
       window.location.assign('/');
     } catch (signInError) {
-      setError(signInError.code === 'auth/popup-closed-by-user'
-        ? 'The sign-in window was closed. Please try again.'
-        : signInError.message);
+      setError(friendlyAuthError(signInError));
     } finally {
       setBusy(false);
     }
@@ -91,9 +87,7 @@ export default function LoginPage() {
       await sendPasswordResetEmail(auth, email.trim());
       setNotice('If an account exists for this email, a password reset link has been sent.');
     } catch (resetError) {
-      setError(resetError.code === 'auth/invalid-email'
-        ? 'Enter a valid email address.'
-        : resetError.message);
+      setError(friendlyAuthError(resetError));
     } finally {
       setBusy(false);
     }

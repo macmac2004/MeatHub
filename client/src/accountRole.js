@@ -36,6 +36,11 @@ export async function applyPendingAccountRole(user) {
   if (!['buyer', 'seller', 'rider'].includes(pending.role)) {
     throw new Error('The saved account type is invalid. Create a new account or contact support.');
   }
-  await saveAccountRole(user, pending.role);
+  try {
+    await saveAccountRole(user, pending.role);
+  } catch (error) {
+    // The account already has a type saved, so sign-in should continue with that one.
+    if (error.status !== 409) throw error;
+  }
   clearPendingAccountRole();
 }

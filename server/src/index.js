@@ -15,15 +15,18 @@ import {
   confirmSellerOrder,
   createCourierLink,
   createOrder,
+  createOrderMessage,
   createProduct,
   declineSellerOrder,
   demoMode,
   getAccountRole,
   getCourierOrder,
   getCourierOrderContext,
+  getOrderMessageContext,
   getOrderNotificationContext,
   getTrackedOrder,
   listAdminPayouts,
+  listOrderMessages,
   listOrders,
   listProducts,
   listRiderOrders,
@@ -521,6 +524,44 @@ app.post('/api/orders/:id/archive', authenticate, requireRole('buyer'), async (r
   }
 });
 
+app.get('/api/orders/:id/messages', authenticate, async (req, res, next) => {
+  try {
+    const messages = await listOrderMessages(req.params.id, req.user.uid);
+    if (!messages) {
+      return res.status(404).json({ error: 'This order chat is not available for your account.' });
+    }
+    res.json(messages);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/orders/:id/messages', authenticate, async (req, res, next) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  if (!text || text.length > 500) {
+    return res.status(400).json({ error: 'Type a message of 500 characters or fewer.' });
+  }
+  try {
+    const message = await createOrderMessage(
+      req.params.id,
+      req.user.uid,
+      text,
+      typeof req.user.name === 'string' ? req.user.name : ''
+    );
+    if (message === null) {
+      return res.status(404).json({ error: 'This order chat is not available for your account.' });
+    }
+    if (!message) {
+      return res.status(400).json({ error: 'Type a message of 500 characters or fewer.' });
+    }
+    notifyOrderMessage(req.params.id, message)
+      .catch((error) => console.error('Could not send order message push:', error));
+    res.status(201).json(message);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/push/subscribe', authenticate, async (req, res, next) => {
   if (!hasPushKeys) return res.status(503).json({ error: 'Web Push is not configured on this server.' });
   if (!req.body?.endpoint || !req.body?.keys?.p256dh || !req.body?.keys?.auth) {
@@ -567,6 +608,21 @@ async function notifyBuyerOfDeliveryUpdate(courierToken, kind, status) {
         tag: `order-${context.orderId}`
       };
   await sendPushToSubscribers(payload, context.customerUid);
+}
+
+async function notifyOrderMessage(orderId, message) {
+  if (!hasPushKeys) return;
+  const context = await getOrderMessageContext(orderId);
+  if (!context) return;
+  const fromBuyer = message.authorRole === 'buyer';
+  const recipients = fromBuyer ? context.sellerUids : [context.customerUid];
+  const payload = {
+    title: `${message.authorName} · Order #${orderId.slice(0, 8)}`,
+    body: message.text.length > 120 ? `${message.text.slice(0, 117)}…` : message.text,
+    url: fromBuyer ? '/' : `/track/${context.trackingToken}`,
+    tag: `order-chat-${orderId}`
+  };
+  await Promise.all(recipients.filter(Boolean).map((uid) => sendPushToSubscribers(payload, uid)));
 }
 
 async function notifySellersOfNewOrder(order) {

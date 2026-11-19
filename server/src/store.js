@@ -269,26 +269,32 @@ function loadDemoStore() {
     saved = JSON.parse(readFileSync(demoStorePath, 'utf8'));
   } catch (error) {
     if (error.code === 'ENOENT') {
-      return { products: initialDemoProducts, orders: [], subscriptions: [] };
+      return { products: initialDemoProducts, orders: [], messages: [], subscriptions: [] };
     }
     throw new Error(`Could not load the demo store at ${demoStorePath}: ${error.message}`, { cause: error });
   }
   if (!saved || !Array.isArray(saved.products) || !Array.isArray(saved.orders)) {
     throw new Error(`The demo store at ${demoStorePath} has an invalid format.`);
   }
-  return { products: saved.products, orders: saved.orders, subscriptions: [] };
+  return {
+    products: saved.products,
+    orders: saved.orders,
+    messages: Array.isArray(saved.messages) ? saved.messages : [],
+    subscriptions: []
+  };
 }
 
 const memory = isDemo
   ? loadDemoStore()
-  : { products: initialDemoProducts, orders: [], subscriptions: [] };
+  : { products: initialDemoProducts, orders: [], messages: [], subscriptions: [] };
 
 function persistDemoStore() {
   const temporaryPath = `${demoStorePath}.${process.pid}.tmp`;
   mkdirSync(dirname(demoStorePath), { recursive: true });
   writeFileSync(temporaryPath, JSON.stringify({
     products: memory.products,
-    orders: memory.orders
+    orders: memory.orders,
+    messages: memory.messages
   }), { encoding: 'utf8', mode: 0o600 });
   renameSync(temporaryPath, demoStorePath);
 }
@@ -813,6 +819,78 @@ export async function getOrderNotificationContext(orderId) {
   }
   if (!order) return null;
   return { customerUid: order.customerUid, trackingToken: order.trackingToken };
+}
+
+const MAX_ORDER_MESSAGE_LENGTH = 500;
+
+export async function getOrderChatContext(orderId, uid) {
+  let order;
+  if (isDemo) {
+    order = memory.orders.find((item) => item.id === orderId && !item.archived) || null;
+  } else {
+    const snapshot = await db.collection('orders').doc(orderId).get();
+    order = snapshot.exists && !snapshot.data().archived
+      ? { id: snapshot.id, ...snapshot.data() }
+      : null;
+  }
+  if (!order) return null;
+  const role = order.customerUid === uid
+    ? 'buyer'
+    : (order.sellerUids || []).includes(uid) ? 'seller' : null;
+  return role ? { order, role } : null;
+}
+
+export async function listOrderMessages(orderId, uid) {
+  const access = await getOrderChatContext(orderId, uid);
+  if (!access) return null;
+  if (isDemo) {
+    return memory.messages
+      .filter((message) => message.orderId === orderId)
+      .map(({ orderId: _orderId, ...message }) => message)
+      .slice(-100);
+  }
+  const snapshot = await db.collection('orders').doc(orderId).collection('messages')
+    .orderBy('createdAt', 'asc')
+    .limit(100)
+    .get();
+  return snapshot.docs.map((document) => document.data());
+}
+
+export async function createOrderMessage(orderId, uid, text, fallbackName = '') {
+  const access = await getOrderChatContext(orderId, uid);
+  if (!access) return null;
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  if (!trimmed || trimmed.length > MAX_ORDER_MESSAGE_LENGTH) return undefined;
+  const authorName = (access.role === 'buyer' ? access.order.customerName : fallbackName)?.trim()
+    || (access.role === 'buyer' ? 'Buyer' : 'Seller');
+  const message = {
+    id: randomUUID(),
+    authorUid: uid,
+    authorRole: access.role,
+    authorName: authorName.slice(0, 60),
+    text: trimmed,
+    createdAt: new Date().toISOString()
+  };
+  if (isDemo) {
+    memory.messages.push({ orderId, ...message });
+    persistDemoStore();
+  } else {
+    await db.collection('orders').doc(orderId).collection('messages').doc(message.id).set(message);
+  }
+  return message;
+}
+
+export async function getOrderMessageContext(orderId) {
+  if (isDemo) {
+    const order = memory.orders.find((item) => item.id === orderId);
+    return order
+      ? { customerUid: order.customerUid, sellerUids: order.sellerUids || [], trackingToken: order.trackingToken }
+      : null;
+  }
+  const snapshot = await db.collection('orders').doc(orderId).get();
+  if (!snapshot.exists) return null;
+  const order = snapshot.data();
+  return { customerUid: order.customerUid, sellerUids: order.sellerUids || [], trackingToken: order.trackingToken };
 }
 
 export async function listAdminPayouts() {
